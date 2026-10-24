@@ -47,6 +47,8 @@ def main():
     parser.add_argument("--depth-every", type=int, default=2,
                         help="compute depth every N frames, reuse it in between")
     parser.add_argument("--no-show", action="store_true", help="don't open a preview window")
+    parser.add_argument("--log-hazards", action="store_true",
+                        help="print custom hazard-model detections")
     parser.add_argument("--lang", choices=["en", "fr"], default="en", help="voice language")
     args = parser.parse_args()
 
@@ -60,7 +62,7 @@ def main():
     hazard_detector = None
     if not args.no_hazards and Path(args.hazard_weights).exists():
         hazard_detector = Detector(args.hazard_weights, conf=args.conf, all_classes=True,
-                                   class_conf=HAZARD_CLASS_CONF, id_offset=100_000)
+                       class_conf=HAZARD_CLASS_CONF, id_offset=100_000)
     elif not args.no_hazards:
         print(f"No hazard model at {args.hazard_weights}: COCO classes only.")
     depth_estimator = None if args.no_depth else DepthEstimator(input_size=args.depth_size)
@@ -73,6 +75,7 @@ def main():
     # Video file: build a synced soundtrack. Webcam: speak live.
     audio = SoundtrackRecorder(args.lang) if is_file else LiveSpeaker(args.lang)
     caption = None  # (text, urgent, time it was said)
+    next_hazard_log_time = 0.0
     video_fps = cap.get(cv2.CAP_PROP_FPS) or 30
     frame_index = -1
 
@@ -106,8 +109,10 @@ def main():
 
         start = time.perf_counter()
         detections = detector.detect(frame)
+        hazard_detections = []
         if hazard_detector:
-            detections += hazard_detector.detect(frame)
+            hazard_detections = hazard_detector.detect(frame)
+            detections += hazard_detections
         t_detect = time.perf_counter()
 
         path = None  # (depth is NOT reset here: it is reused between frames)
@@ -132,6 +137,15 @@ def main():
                 else:
                     audio.say(alert, text)
                 caption = (text, alert.level == URGENT, t)
+            if args.log_hazards and hazard_detections and t >= next_hazard_log_time:
+                details = "; ".join(
+                    f"{det.class_name} {det.confidence:.2f}"
+                    f"{f', {det.distance:.1f}m' if det.distance is not None else ''}"
+                    f"{', in-path' if det.in_path else ''}"
+                    for det in hazard_detections
+                )
+                print(f"[{t:6.2f}s] [hazard-model] {details}")
+                next_hazard_log_time = t + 1.0
         end = time.perf_counter()
 
         times["detect"].append(t_detect - start)
@@ -142,7 +156,7 @@ def main():
         fps_smooth = 0.9 * fps_smooth + 0.1 * (1 / elapsed) if fps_smooth else 1 / elapsed
 
         if path is not None:
-            draw_path(frame, path)
+            draw_path(frame, path, detections)
         trails.draw(frame, detections)
         draw_detections(frame, detections)
         draw_fps(frame, fps_smooth)

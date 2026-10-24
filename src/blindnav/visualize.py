@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 from blindnav.detector import Detection
-from blindnav.spatial import PathStatus
+from blindnav.spatial import PathStatus, path_hazard
 
 # One fixed color per class (BGR, because OpenCV uses Blue-Green-Red order).
 COLORS = {
@@ -52,7 +52,8 @@ def draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarra
     return frame
 
 
-def draw_path(frame: np.ndarray, status: PathStatus) -> np.ndarray:
+def draw_path(frame: np.ndarray, status: PathStatus,
+              detections: list[Detection] | None = None) -> np.ndarray:
     scale = frame.shape[0] / 720
     if status.corridor is not None:
         # Semi-transparent corridor: green = clear, red = blocked.
@@ -69,11 +70,15 @@ def draw_path(frame: np.ndarray, status: PathStatus) -> np.ndarray:
     if not status.ground_found:
         text, color = "PATH: no ground found", (0, 200, 255)
     elif status.blocked:
-        text = f"PATH BLOCKED: {status.distance:.1f}m @{status.clock}h"
+        hazard = path_hazard(detections or [], status)
+        label = hazard.class_name if hazard else "obstacle"
+        text = f"PATH BLOCKED: {label} {status.distance:.1f}m @{status.clock}h"
         if status.ttc is not None:
             text += f" TTC {status.ttc:.1f}s"
         if status.head_level:
             text += " HEAD LEVEL!"
+        elif status.guidance:
+            text += f" KEEP {status.guidance.upper()}"
         color = (0, 0, 255)
     else:
         text, color = "PATH: clear", (0, 200, 0)

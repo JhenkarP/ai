@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SafeStride Live Console</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar"><div class="brand"><span class="brand-mark">SS</span><div><strong>SafeStride</strong><small>assistive vision console</small></div></div><div class="connection"><span id="connection-dot" class="dot"></span><span id="connection-label">Offline</span></div></header>
+    <section class="hero-grid">
+      <div class="view-panel"><div class="panel-head"><div><span class="eyebrow">LIVE FEED</span><h1>Path awareness</h1></div><span id="mode-badge" class="badge">STANDBY</span></div><div class="feed-wrap"><div class="scanline"></div><img id="feed" alt="SafeStride annotated live camera feed"><div id="feed-placeholder" class="feed-placeholder"><span class="pulse-ring">+</span><strong>Camera feed is ready</strong><span>Start monitoring to see annotated perception</span></div></div><div class="feed-controls"><button id="start" class="primary"><span>●</span> Start monitoring</button><button id="stop" class="secondary" disabled>Stop</button><button id="test-voice" class="secondary">Test voice</button><label class="toggle"><input id="voice" type="checkbox" checked><span></span> Voice alerts</label></div><div class="upload-row"><input id="video-file" type="file" accept="video/*"><button id="upload" class="secondary">Upload video</button><span id="upload-status">Use a local video file</span></div></div>
+      <aside class="status-panel"><div class="panel-head"><div><span class="eyebrow">DIAGNOSTICS</span><h2>What the system sees</h2></div></div><div class="alert-card" id="alert-card"><span class="alert-kicker">CURRENT PRIORITY</span><strong id="alert">No active alert</strong><span id="alert-help">The path is being watched.</span></div><div class="metrics"><div><span>Objects</span><strong id="objects">0</strong></div><div><span>Inference</span><strong id="fps">--</strong></div><div><span>Depth</span><strong id="depth">--</strong></div></div><div class="status-line"><span class="status-icon">↗</span><div><span>System status</span><strong id="status">Waiting for camera</strong></div></div><div class="legend"><span><i class="green"></i> clear path</span><span><i class="red"></i> path risk</span><span><i class="amber"></i> detected object</span></div></aside>
+    </section>
+    <footer><span>Local processing</span><span>Models stay on this machine</span><span>SafeStride Assist</span></footer>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

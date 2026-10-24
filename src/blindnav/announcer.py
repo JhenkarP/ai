@@ -9,12 +9,13 @@ import math
 from dataclasses import dataclass
 
 from blindnav.detector import Detection
-from blindnav.spatial import PathStatus
+from blindnav.spatial import PathStatus, path_hazard
 
 WARNING, URGENT = 1, 2
 WARNING_THRESHOLD = 0.3   # urgency needed to say something
 URGENT_THRESHOLD = 0.6    # urgency needed to interrupt with "Stop!"
 PROXIMITY_RANGE = 4.0     # m: in the path, urgency grows from 0 (at 4 m) to 1 (at 0 m)
+HAZARD_PROXIMITY_RANGE = 6.0  # m: give fixed street hazards more warning distance
 TTC_RANGE = 6.0           # s: urgency grows from 0 (impact in 6 s) to 1 (impact now)
 MAX_DISTANCE = 20.0       # m: farther detections are ignored (mostly false positives)
 MAX_APPROACH_DISTANCE = 12.0  # m: beyond this, distances are unreliable -> no "approaching" alert
@@ -26,6 +27,7 @@ CLASS_WEIGHT = {
     # Street hazards (our phase 6 model). Stairs: a fall is among the worst accidents.
     "stairs": 1.0, "pole": 0.8, "pillar": 0.8, "obstacle": 0.7, "cone": 0.6,
 }
+HAZARD_CLASSES = {"stairs", "pole", "pillar", "obstacle", "cone", "bin"}
 DEFAULT_WEIGHT = 0.6      # static objects: bench, chair, potted plant, hydrant...
 OBSTACLE_WEIGHT = 0.8     # unknown obstacle found by the 3D corridor
 HEAD_LEVEL_WEIGHT = 1.0   # a cane can't detect it: treat it as seriously as a car
@@ -46,19 +48,21 @@ class Alert:
     level: int            # WARNING or URGENT
     approaching: bool = False
     head_level: bool = False
+    guidance: str | None = None
 
 
 def clip01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
-def urgency(distance: float, ttc: float | None, in_path: bool, weight: float) -> float:
+def urgency(distance: float, ttc: float | None, in_path: bool, weight: float,
+            proximity_range: float = PROXIMITY_RANGE) -> float:
     """Combine two independent reasons to worry, and keep the strongest one.
 
     - proximity: something very close IN MY PATH (even if it doesn't move: a pole)
     - time: something that will reach me soon (even if it is still far: a fast car)
     """
-    proximity = clip01(1 - distance / PROXIMITY_RANGE) if in_path else 0.0
+    proximity = clip01(1 - distance / proximity_range) if in_path else 0.0
     time = clip01(1 - ttc / TTC_RANGE) if ttc is not None and distance < MAX_APPROACH_DISTANCE else 0.0
     if not in_path:
         time *= 0.6  # approaching but beside my path: I'll probably walk past it
@@ -72,23 +76,34 @@ def rank_alerts(detections: list[Detection], path: PathStatus | None) -> list[Al
         if det.distance is None or det.distance > MAX_DISTANCE or det.track_id is None:
             continue  # no track id = not confirmed over several frames yet
         weight = CLASS_WEIGHT.get(det.class_name, DEFAULT_WEIGHT)
-        u = urgency(det.distance, det.ttc, det.in_path, weight)
+        proximity_range = HAZARD_PROXIMITY_RANGE if det.class_name in HAZARD_CLASSES else PROXIMITY_RANGE
+        u = urgency(det.distance, det.ttc, det.in_path, weight, proximity_range)
         alerts.append(Alert(det.track_id, det.class_name, det.distance, det.clock or 12, u,
                             level=0, approaching=det.ttc is not None))
 
     if path is not None and path.blocked:
         # If YOLO already knows what blocks the path, its name is more useful than "obstacle".
-        named = any(d.in_path and d.distance is not None and abs(d.distance - path.distance) < 1.0
-                    for d in detections)
-        if not named or path.head_level:
+        named = path_hazard(detections, path)
+        if named is not None:
+            for alert in alerts:
+                if alert.key == named.track_id:
+                    alert.guidance = path.guidance
+                    break
+        if named is None or path.head_level:
             weight = HEAD_LEVEL_WEIGHT if path.head_level else OBSTACLE_WEIGHT
             u = urgency(path.distance, path.ttc, True, weight)
             alerts.append(Alert("path", "obstacle", path.distance, path.clock or 12, u, level=0,
-                                approaching=path.ttc is not None, head_level=path.head_level))
+                                approaching=path.ttc is not None, head_level=path.head_level,
+                                guidance=path.guidance))
 
     for a in alerts:
         a.level = URGENT if a.urgency >= URGENT_THRESHOLD else (
             WARNING if a.urgency >= WARNING_THRESHOLD else 0)
+    if path is not None and path.guidance:
+        in_path_keys = {det.track_id for det in detections if det.in_path}
+        for alert in alerts:
+            if alert.key == "path" or alert.key in in_path_keys:
+                alert.guidance = path.guidance
     return sorted([a for a in alerts if a.level], key=lambda a: a.urgency, reverse=True)
 
 
@@ -144,10 +159,12 @@ LABELS = {
 TEMPLATES = {
     "en": {"ahead": "ahead", "clock": "at {h} o'clock", "near": "very close",
            "meters": "{n} meter", "meters_plural": "{n} meters", "stop": "Stop! ",
-           "approaching": "{label} approaching", "head": "Watch your head! "},
+           "approaching": "{label} approaching", "head": "Watch your head! ",
+           "keep": "Keep {side}"},
     "fr": {"ahead": "devant", "clock": "à {h} heures", "near": "tout près",
            "meters": "{n} mètre", "meters_plural": "{n} mètres", "stop": "Stop ! ",
-           "approaching": "{label} qui approche", "head": "Attention à la tête ! "},
+           "approaching": "{label} qui approche", "head": "Attention à la tête ! ",
+           "keep": "Gardez la {side}"},
 }
 
 
@@ -161,5 +178,10 @@ def message(alert: Alert, lang: str = "en") -> str:
     far = T["near"] if alert.distance < 1 else T["meters" if n == 1 else "meters_plural"].format(n=n)
 
     prefix = T["head"] if alert.head_level else (T["stop"] if alert.level == URGENT else "")
-    text = f"{prefix}{what} {where}, {far}"
+    if alert.guidance:
+        text = f"{prefix}Path blocked, {far}"
+        side = alert.guidance.capitalize() if lang == "en" else ("gauche" if alert.guidance == "left" else "droite")
+        text += f". {T['keep'].format(side=side)}."
+    else:
+        text = f"{prefix}{what} {where}, {far}"
     return text[0].upper() + text[1:]

@@ -111,8 +111,25 @@ class PathStatus:
     head_level: bool = False        # obstacle with nothing below 1 m: invisible to a cane
     approach_speed: float | None = None  # m/s (filled in by risk analysis)
     ttc: float | None = None             # s
+    guidance: str | None = None          # recommended clear side: "left" or "right"
     obstacle_pixels: tuple = field(default_factory=lambda: (np.array([]), np.array([])))
     corridor: np.ndarray | None = None  # 4 image points of the path, for drawing
+
+
+def path_hazard(detections: list[Detection], status: PathStatus) -> Detection | None:
+    """Return the named hazard closest to the depth obstacle in the walking path."""
+    if not status.blocked or status.distance is None:
+        return None
+    hazards = [
+        det for det in detections
+        if det.class_name in {"stairs", "pole", "pillar", "bin", "cone", "obstacle"}
+        and det.distance is not None
+        and abs(det.distance - status.distance) < max(2.0, min(3.0, status.distance * 0.75))
+    ]
+    if not hazards:
+        return None
+    in_path = [det for det in hazards if det.in_path]
+    return min(in_path or hazards, key=lambda det: abs(det.distance - status.distance))
 
 
 class SpatialAnalyzer:
@@ -155,6 +172,14 @@ class SpatialAnalyzer:
             status.clock = clock_direction(np.median(xs[is_obstacle][front]), W, f)
             status.head_level = bool(height[is_obstacle][front].min() > HEAD_LEVEL)
             status.obstacle_pixels = (ys[is_obstacle], xs[is_obstacle])
+            front_x = xs[is_obstacle][front]
+            left_count = int((front_x < W / 2).sum())
+            right_count = int((front_x >= W / 2).sum())
+            center_offset = abs(float(np.median(front_x)) - W / 2) / W
+            if center_offset > 0.08:
+                status.guidance = "right" if np.median(front_x) < W / 2 else "left"
+            elif abs(left_count - right_count) >= max(3, int(len(front_x) * 0.25)):
+                status.guidance = "right" if left_count > right_count else "left"
         return status
 
     @staticmethod
