@@ -56,11 +56,19 @@ export default function App() {
   });
   const lastAlert = useRef('');
   const lastNavigationEvent = useRef(0);
+  const navigationActive = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
   const locationWatcher = useRef<Location.LocationSubscription | null>(null);
   const headingWatcher = useRef<Location.LocationSubscription | null>(null);
   const headingRef = useRef<number | null>(null);
+  const lastSpokenCardinal = useRef('');
+
+  function cardinalDirection(degrees: number) {
+    return ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'][
+      Math.round(degrees / 45) % 8
+    ];
+  }
 
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current);
@@ -74,6 +82,7 @@ export default function App() {
     if (!next) return;
     setNavigation(next);
     const guidance = next.guidance ?? next.message;
+    navigationActive.current = Boolean(next.active);
     setRouteStatus(next.active ? (guidance ?? 'Route active') : 'No active route');
     if (guidance && next.event_id !== lastNavigationEvent.current && !state?.urgent) {
       lastNavigationEvent.current = next.event_id;
@@ -86,7 +95,7 @@ export default function App() {
     const facing = headingRef.current ?? heading;
     setLocationStatus(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
     if (facing !== null && facing !== undefined && facing >= 0) {
-      setHeadingStatus(`Facing ${Math.round(facing)} degrees`);
+      setHeadingStatus(`Facing ${cardinalDirection(facing)} (${Math.round(facing)} degrees)`);
     }
     await fetch(`${backend.replace(/\/$/, '')}/location`, {
       method: 'POST',
@@ -112,7 +121,12 @@ export default function App() {
       const facing = heading.trueHeading >= 0 ? heading.trueHeading : heading.magHeading;
       if (facing >= 0) {
         headingRef.current = facing;
-        setHeadingStatus(`Facing ${Math.round(facing)} degrees`);
+        const cardinal = cardinalDirection(facing);
+        setHeadingStatus(`Facing ${cardinal} (${Math.round(facing)} degrees)`);
+        if (navigationActive.current && cardinal !== lastSpokenCardinal.current) {
+          lastSpokenCardinal.current = cardinal;
+          Speech.speak(`You are facing ${cardinal}.`, { rate: 0.85, pitch: 0.85 });
+        }
       }
     });
   }
