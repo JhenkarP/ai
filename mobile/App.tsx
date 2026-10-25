@@ -1,4 +1,5 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Location from 'expo-location';
 import * as Speech from 'expo-speech';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
@@ -7,6 +8,7 @@ import {
   Image,
   Pressable,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -14,6 +16,13 @@ import {
 } from 'react-native';
 
 const DEFAULT_BACKEND = 'http://10.26.49.63:8765';
+
+type NavigationState = {
+  active: boolean;
+  guidance: string | null;
+  event_id: number;
+  distance_remaining: number | null;
+};
 
 function bytesToBase64(bytes: Uint8Array) {
   let binary = '';
@@ -35,13 +44,77 @@ export default function App() {
   const [alert, setAlert] = useState('No active alert');
   const [depth, setDepth] = useState(false);
   const [fps, setFps] = useState(0);
+  const [destination, setDestination] = useState('');
+  const [routeStatus, setRouteStatus] = useState('No active route');
+  const [locationStatus, setLocationStatus] = useState('Location inactive');
+  const [navigation, setNavigation] = useState<NavigationState>({
+    active: false, guidance: null, event_id: 0, distance_remaining: null,
+  });
   const lastAlert = useRef('');
+  const lastNavigationEvent = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
+  const locationWatcher = useRef<Location.LocationSubscription | null>(null);
 
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current);
+    locationWatcher.current?.remove();
+    Speech.stop();
   }, []);
+
+  function applyNavigation(state: any) {
+    const next = state?.navigation;
+    if (!next) return;
+    setNavigation(next);
+    setRouteStatus(next.active ? (next.guidance ?? 'Route active') : 'No active route');
+    if (next.guidance && next.event_id !== lastNavigationEvent.current && !state?.urgent) {
+      lastNavigationEvent.current = next.event_id;
+      Speech.speak(next.guidance, { rate: 0.85, pitch: 0.85 });
+    }
+  }
+
+  async function startLocationUpdates() {
+    const permission = await Location.requestForegroundPermissionsAsync();
+    if (permission.status !== Location.PermissionStatus.GRANTED) {
+      setLocationStatus('Location permission denied');
+      return;
+    }
+    setLocationStatus('Finding current location');
+    locationWatcher.current = await Location.watchPositionAsync(
+      { accuracy: Location.Accuracy.High, distanceInterval: 5, timeInterval: 3000 },
+      async (position) => {
+        const { latitude, longitude, accuracy, heading, speed } = position.coords;
+        setLocationStatus(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+        try {
+          await fetch(`${backend.replace(/\/$/, '')}/location`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ latitude, longitude, accuracy, heading, speed, timestamp: position.timestamp }),
+          });
+          const state = await fetch(`${backend.replace(/\/$/, '')}/state`).then((result) => result.json());
+          applyNavigation(state);
+        } catch (_) {
+          setLocationStatus('Location update failed');
+        }
+      },
+    );
+  }
+
+  async function setRoute() {
+    if (!destination.trim()) return;
+    try {
+      const response = await fetch(`${backend.replace(/\/$/, '')}/route`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ destination: destination.trim() }),
+      });
+      if (!response.ok) throw new Error('Could not create route');
+      const result = await response.json();
+      applyNavigation({ navigation: result.navigation });
+    } catch (error) {
+      setRouteStatus(error instanceof Error ? error.message : 'Route failed');
+    }
+  }
 
   async function sendFrame() {
     if (!runningRef.current || busy || !camera.current) return;
@@ -66,6 +139,7 @@ export default function App() {
       setAlert(state.alert ?? 'No active alert');
       setDepth(Boolean(state.depth));
       setFps(Number(state.fps) || 0);
+      applyNavigation(state);
       if (state.alert && state.alert !== lastAlert.current) {
         lastAlert.current = state.alert;
         Speech.stop();
@@ -79,15 +153,21 @@ export default function App() {
     }
   }
 
-  function toggleRunning() {
-    setRunning((current) => {
-      const next = !current;
-      runningRef.current = next;
-      setStatus(next ? 'Connecting' : 'Stopped');
-      if (next) timer.current = setTimeout(sendFrame, 250);
-      else if (timer.current) clearTimeout(timer.current);
-      return next;
-    });
+  async function startMonitoring() {
+    runningRef.current = true;
+    setRunning(true);
+    setStatus('Connecting');
+    await startLocationUpdates();
+    timer.current = setTimeout(sendFrame, 250);
+  }
+
+  function stopMonitoring() {
+    runningRef.current = false;
+    setRunning(false);
+    setStatus('Stopped');
+    locationWatcher.current?.remove();
+    locationWatcher.current = null;
+    if (timer.current) clearTimeout(timer.current);
   }
 
   if (!permission) return <View style={styles.center}><ActivityIndicator color="#8ce3c3" /></View>;
@@ -105,6 +185,7 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.container}>
+      <ScrollView contentContainerStyle={styles.content}>
       <StatusBar style="light" />
       <View style={styles.header}>
         <View>
@@ -129,6 +210,23 @@ export default function App() {
         placeholderTextColor="#71808b"
         style={styles.input}
       />
+      <View style={styles.routeRow}>
+        <TextInput
+          value={destination}
+          onChangeText={setDestination}
+          placeholder="Destination, e.g. NIE campus"
+          placeholderTextColor="#71808b"
+          style={[styles.input, styles.destinationInput]}
+        />
+        <Pressable style={styles.routeButton} onPress={setRoute}>
+          <Text style={styles.routeText}>Route</Text>
+        </Pressable>
+      </View>
+      <View style={styles.navigationBox}>
+        <Text style={styles.eyebrow}>NAVIGATION</Text>
+        <Text style={styles.navigationText}>{routeStatus}</Text>
+        <Text style={styles.locationText}>{locationStatus}</Text>
+      </View>
       <View style={styles.stats}>
         <Stat label="STATUS" value={status} />
         <Stat label="DEPTH" value={depth ? 'ACTIVE' : 'OFF'} />
@@ -138,10 +236,11 @@ export default function App() {
         <Text style={styles.eyebrow}>CURRENT PRIORITY</Text>
         <Text style={styles.alert}>{alert}</Text>
       </View>
-      <Pressable style={[styles.primaryButton, running && styles.stopButton]} onPress={toggleRunning}>
+      <Pressable style={[styles.primaryButton, running && styles.stopButton]} onPress={running ? stopMonitoring : startMonitoring}>
         <Text style={styles.primaryText}>{running ? 'Stop monitoring' : 'Start monitoring'}</Text>
       </Pressable>
       <StatusBar style="auto" />
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -158,6 +257,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 12,
   },
+  content: { paddingBottom: 28 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 },
   eyebrow: { color: '#8ce3c3', fontSize: 11, fontWeight: '700', letterSpacing: 1.5 },
   title: { color: '#f1f7f4', fontSize: 30, fontWeight: '700', marginTop: 5 },
@@ -168,12 +268,19 @@ const styles = StyleSheet.create({
   annotated: { width: '100%', height: '100%' },
   previewHint: { color: '#9aabb2', fontSize: 14 },
   input: { backgroundColor: '#142127', borderColor: '#31434a', borderWidth: 1, color: '#f1f7f4', marginTop: 14, paddingHorizontal: 13, paddingVertical: 12, borderRadius: 6 },
+  routeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  destinationInput: { flex: 1 },
+  routeButton: { backgroundColor: '#294b4b', borderRadius: 6, marginTop: 14, paddingHorizontal: 15, paddingVertical: 14 },
+  routeText: { color: '#8ce3c3', fontWeight: '800' },
   stats: { flexDirection: 'row', gap: 8, marginTop: 12 },
   stat: { flex: 1, backgroundColor: '#142127', padding: 11, borderRadius: 6 },
   statLabel: { color: '#8a9aa1', fontSize: 10, fontWeight: '700' },
   statValue: { color: '#f1f7f4', fontSize: 15, fontWeight: '700', marginTop: 5 },
   alertBox: { backgroundColor: '#142127', borderLeftColor: '#8ce3c3', borderLeftWidth: 3, padding: 14, marginTop: 12, marginBottom: 14 },
   alert: { color: '#f1f7f4', fontSize: 17, fontWeight: '600', marginTop: 7 },
+  navigationBox: { backgroundColor: '#142127', borderLeftColor: '#8ca9e3', borderLeftWidth: 3, padding: 14, marginTop: 12, marginBottom: 14 },
+  navigationText: { color: '#f1f7f4', fontSize: 16, fontWeight: '600', marginTop: 7 },
+  locationText: { color: '#8a9aa1', fontSize: 12, marginTop: 7 },
   primaryButton: { alignItems: 'center', backgroundColor: '#8ce3c3', borderRadius: 6, paddingVertical: 15 },
   stopButton: { backgroundColor: '#dc7668' },
   primaryText: { color: '#0b1418', fontSize: 16, fontWeight: '800' },
