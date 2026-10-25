@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+from huggingface_hub import try_to_load_from_cache
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
 # "Metric" = outputs real distances in meters (not just "closer / farther").
@@ -19,12 +20,13 @@ class DepthEstimator:
         # FP16 (half precision) halves memory and is ~2x faster on GPU, with almost no accuracy loss.
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
         self.input_size = input_size
-        processor = AutoImageProcessor.from_pretrained(model_id)
+        local_only = try_to_load_from_cache(model_id, "preprocessor_config.json") is not None
+        processor = AutoImageProcessor.from_pretrained(model_id, local_files_only=local_only)
         # Normalization constants the model was trained with (ImageNet mean / std).
         self.mean = torch.tensor(processor.image_mean, device=self.device).view(1, 3, 1, 1)
         self.std = torch.tensor(processor.image_std, device=self.device).view(1, 3, 1, 1)
         self.model = AutoModelForDepthEstimation.from_pretrained(
-            model_id, torch_dtype=self.dtype).to(self.device).eval()
+            model_id, torch_dtype=self.dtype, local_files_only=local_only).to(self.device).eval()
 
     def _network_size(self, h: int, w: int) -> tuple[int, int]:
         # Keep the aspect ratio, short side = input_size, both sides multiples of 14

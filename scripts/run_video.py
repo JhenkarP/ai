@@ -53,6 +53,7 @@ def main():
     args = parser.parse_args()
 
     source = int(args.source) if args.source.isdigit() else args.source
+    is_file = isinstance(source, str) and not source.lower().startswith(("http://", "https://", "rtsp://"))
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
         raise SystemExit(f"Cannot open {args.source}")
@@ -71,7 +72,6 @@ def main():
     motion = MotionTracker()
     trails = TrailDrawer()
     announcer = Announcer()
-    is_file = isinstance(source, str)
     # Video file: build a synced soundtrack. Webcam: speak live.
     audio = SoundtrackRecorder(args.lang) if is_file else LiveSpeaker(args.lang)
     caption = None  # (text, urgent, time it was said)
@@ -80,7 +80,7 @@ def main():
     frame_index = -1
 
     writer = None
-    if isinstance(source, str):
+    if is_file:
         out_dir = Path("data/outputs")
         out_dir.mkdir(parents=True, exist_ok=True)
         if args.no_depth:  # detection only: no alerts, so no sound to add
@@ -101,7 +101,7 @@ def main():
         frame_index += 1
         # Speeds must use *video* time. We process slower than real time (~9 FPS on a
         # 30 FPS video), so wall-clock time would make everything look 3x too slow.
-        t = frame_index / video_fps if isinstance(source, str) else time.perf_counter()
+        t = frame_index / video_fps if is_file else time.perf_counter()
 
         h, w = frame.shape[:2]
         if w > MAX_WIDTH:
@@ -167,7 +167,7 @@ def main():
             depth_view = draw_detections(colorize(depth), detections)
             frame = np.hstack([frame, depth_view]) if w >= h else np.vstack([frame, depth_view])
 
-        if isinstance(source, str):
+        if is_file:
             if writer is None:  # created on the first frame, once we know the final size
                 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                 writer = cv2.VideoWriter(str(out_path), fourcc, cap.get(cv2.CAP_PROP_FPS),
