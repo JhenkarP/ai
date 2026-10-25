@@ -35,13 +35,14 @@ export default function App() {
   const [depth, setDepth] = useState(false);
   const [fps, setFps] = useState(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runningRef = useRef(false);
 
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current);
   }, []);
 
   async function sendFrame() {
-    if (!running || busy || !camera.current) return;
+    if (!runningRef.current || busy || !camera.current) return;
     setBusy(true);
     try {
       const photo = await camera.current.takePictureAsync({
@@ -68,13 +69,14 @@ export default function App() {
       setStatus(error instanceof Error ? error.message : 'Connection failed');
     } finally {
       setBusy(false);
-      if (running) timer.current = setTimeout(sendFrame, 180);
+      if (runningRef.current) timer.current = setTimeout(sendFrame, 180);
     }
   }
 
   function toggleRunning() {
     setRunning((current) => {
       const next = !current;
+      runningRef.current = next;
       setStatus(next ? 'Connecting' : 'Stopped');
       if (next) timer.current = setTimeout(sendFrame, 250);
       else if (timer.current) clearTimeout(timer.current);
