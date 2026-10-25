@@ -1,6 +1,7 @@
 """Serve the SafeStride live inference stream to a browser."""
 
 import argparse
+import base64
 import cgi
 import json
 import os
@@ -347,6 +348,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(413, "Camera frame is missing or too large")
             return
         raw = self.rfile.read(content_length)
+        mobile_json = self.headers.get("Content-Type", "").startswith("application/json")
+        if mobile_json:
+            try:
+                payload = json.loads(raw)
+                raw = base64.b64decode(payload["image"], validate=True)
+            except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+                self.send_error(400, "Invalid base64 camera frame")
+                return
         image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             self.send_error(400, "Invalid camera frame")
@@ -358,6 +367,20 @@ class Handler(BaseHTTPRequestHandler):
         ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 82])
         if not ok:
             self.send_error(500, "Could not encode annotated frame")
+            return
+        if mobile_json:
+            with state_lock:
+                snapshot = dict(state)
+            body = json.dumps({
+                "image": base64.b64encode(encoded.tobytes()).decode("ascii"),
+                "state": snapshot,
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")

@@ -23,12 +23,6 @@ function bytesToBase64(bytes: Uint8Array) {
   return btoa(binary);
 }
 
-function base64ToBlob(base64: string) {
-  const binary = atob(base64);
-  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  return new Blob([bytes], { type: 'image/jpeg' });
-}
-
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const camera = useRef<CameraView>(null);
@@ -59,13 +53,13 @@ export default function App() {
       if (!photo?.base64) throw new Error('Camera returned no frame');
       const response = await fetch(`${backend.replace(/\/$/, '')}/frame`, {
         method: 'POST',
-        headers: { 'Content-Type': 'image/jpeg' },
-        body: base64ToBlob(photo.base64),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: photo.base64 }),
       });
       if (!response.ok) throw new Error(`Backend error ${response.status}`);
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      setImage(`data:image/jpeg;base64,${bytesToBase64(bytes)}`);
-      const state = await fetch(`${backend.replace(/\/$/, '')}/state`).then((result) => result.json());
+      const result = await response.json();
+      setImage(`data:image/jpeg;base64,${result.image}`);
+      const state = result.state;
       setStatus(state.status ?? 'Monitoring');
       setAlert(state.alert ?? 'No active alert');
       setDepth(Boolean(state.depth));
