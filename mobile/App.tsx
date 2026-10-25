@@ -1,0 +1,172 @@
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { StatusBar } from 'expo-status-bar';
+import { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Image,
+  Pressable,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+
+const DEFAULT_BACKEND = 'http://10.26.49.63:8765';
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+export default function App() {
+  const [permission, requestPermission] = useCameraPermissions();
+  const camera = useRef<CameraView>(null);
+  const [backend, setBackend] = useState(DEFAULT_BACKEND);
+  const [running, setRunning] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [image, setImage] = useState<string | null>(null);
+  const [status, setStatus] = useState('Ready');
+  const [alert, setAlert] = useState('No active alert');
+  const [depth, setDepth] = useState(false);
+  const [fps, setFps] = useState(0);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+  }, []);
+
+  async function sendFrame() {
+    if (!running || busy || !camera.current) return;
+    setBusy(true);
+    try {
+      const photo = await camera.current.takePictureAsync({
+        base64: true,
+        quality: 0.65,
+        skipProcessing: true,
+      });
+      if (!photo?.base64) throw new Error('Camera returned no frame');
+      const source = await fetch(`data:image/jpeg;base64,${photo.base64}`);
+      const response = await fetch(`${backend.replace(/\/$/, '')}/frame`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'image/jpeg' },
+        body: await source.blob(),
+      });
+      if (!response.ok) throw new Error(`Backend error ${response.status}`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      setImage(`data:image/jpeg;base64,${bytesToBase64(bytes)}`);
+      const state = await fetch(`${backend.replace(/\/$/, '')}/state`).then((result) => result.json());
+      setStatus(state.status ?? 'Monitoring');
+      setAlert(state.alert ?? 'No active alert');
+      setDepth(Boolean(state.depth));
+      setFps(Number(state.fps) || 0);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Connection failed');
+    } finally {
+      setBusy(false);
+      if (running) timer.current = setTimeout(sendFrame, 180);
+    }
+  }
+
+  function toggleRunning() {
+    setRunning((current) => {
+      const next = !current;
+      setStatus(next ? 'Connecting' : 'Stopped');
+      if (next) timer.current = setTimeout(sendFrame, 250);
+      else if (timer.current) clearTimeout(timer.current);
+      return next;
+    });
+  }
+
+  if (!permission) return <View style={styles.center}><ActivityIndicator color="#8ce3c3" /></View>;
+  if (!permission.granted) {
+    return (
+      <SafeAreaView style={styles.center}>
+        <Text style={styles.eyebrow}>SAFESTRIDE MOBILE</Text>
+        <Text style={styles.title}>Camera access is required</Text>
+        <Pressable style={styles.primaryButton} onPress={requestPermission}>
+          <Text style={styles.primaryText}>Allow camera</Text>
+        </Pressable>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <StatusBar style="light" />
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.eyebrow}>SAFESTRIDE MOBILE</Text>
+          <Text style={styles.title}>Path awareness</Text>
+        </View>
+        <View style={[styles.livePill, running && styles.livePillActive]}>
+          <Text style={styles.liveText}>{running ? 'LIVE' : 'STANDBY'}</Text>
+        </View>
+      </View>
+      <View style={styles.preview}>
+        <CameraView ref={camera} style={StyleSheet.absoluteFill} facing="back" />
+        {image && <Image source={{ uri: image }} style={styles.annotated} resizeMode="cover" />}
+        {!image && <Text style={styles.previewHint}>Annotated feed appears here</Text>}
+      </View>
+      <TextInput
+        value={backend}
+        onChangeText={setBackend}
+        autoCapitalize="none"
+        autoCorrect={false}
+        placeholder="Backend URL"
+        placeholderTextColor="#71808b"
+        style={styles.input}
+      />
+      <View style={styles.stats}>
+        <Stat label="STATUS" value={status} />
+        <Stat label="DEPTH" value={depth ? 'ACTIVE' : 'OFF'} />
+        <Stat label="FPS" value={fps ? `${fps.toFixed(1)}` : '--'} />
+      </View>
+      <View style={styles.alertBox}>
+        <Text style={styles.eyebrow}>CURRENT PRIORITY</Text>
+        <Text style={styles.alert}>{alert}</Text>
+      </View>
+      <Pressable style={[styles.primaryButton, running && styles.stopButton]} onPress={toggleRunning}>
+        <Text style={styles.primaryText}>{running ? 'Stop monitoring' : 'Start monitoring'}</Text>
+      </Pressable>
+      <StatusBar style="auto" />
+    </SafeAreaView>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return <View style={styles.stat}><Text style={styles.statLabel}>{label}</Text><Text style={styles.statValue}>{value}</Text></View>;
+}
+
+const styles = StyleSheet.create({
+  center: { flex: 1, backgroundColor: '#0b1418', alignItems: 'center', justifyContent: 'center', padding: 28 },
+  container: {
+    flex: 1,
+    backgroundColor: '#0b1418',
+    paddingHorizontal: 18,
+    paddingTop: 12,
+  },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 },
+  eyebrow: { color: '#8ce3c3', fontSize: 11, fontWeight: '700', letterSpacing: 1.5 },
+  title: { color: '#f1f7f4', fontSize: 30, fontWeight: '700', marginTop: 5 },
+  livePill: { borderColor: '#53636b', borderWidth: 1, paddingHorizontal: 12, paddingVertical: 7 },
+  livePillActive: { borderColor: '#8ce3c3' },
+  liveText: { color: '#8ce3c3', fontSize: 11, fontWeight: '700' },
+  preview: { backgroundColor: '#162329', borderColor: '#31434a', borderWidth: 1, borderRadius: 8, height: 310, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+  annotated: { width: '100%', height: '100%' },
+  previewHint: { color: '#9aabb2', fontSize: 14 },
+  input: { backgroundColor: '#142127', borderColor: '#31434a', borderWidth: 1, color: '#f1f7f4', marginTop: 14, paddingHorizontal: 13, paddingVertical: 12, borderRadius: 6 },
+  stats: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  stat: { flex: 1, backgroundColor: '#142127', padding: 11, borderRadius: 6 },
+  statLabel: { color: '#8a9aa1', fontSize: 10, fontWeight: '700' },
+  statValue: { color: '#f1f7f4', fontSize: 15, fontWeight: '700', marginTop: 5 },
+  alertBox: { backgroundColor: '#142127', borderLeftColor: '#8ce3c3', borderLeftWidth: 3, padding: 14, marginTop: 12, marginBottom: 14 },
+  alert: { color: '#f1f7f4', fontSize: 17, fontWeight: '600', marginTop: 7 },
+  primaryButton: { alignItems: 'center', backgroundColor: '#8ce3c3', borderRadius: 6, paddingVertical: 15 },
+  stopButton: { backgroundColor: '#dc7668' },
+  primaryText: { color: '#0b1418', fontSize: 16, fontWeight: '800' },
+});

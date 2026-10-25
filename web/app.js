@@ -14,67 +14,8 @@ let locationWatcher = null;
 let lastAlertId = 0;
 let lastHapticAlertId = 0;
 let lastNavigationEventId = 0;
-let cameraStream = null;
-let cameraVideo = null;
-let captureCanvas = null;
-let captureContext = null;
-let captureRunning = false;
-let frameInFlight = false;
 
 function setText(selector, text) { document.querySelector(selector).textContent = text; }
-
-async function captureLoop() {
-  if (!captureRunning || !cameraVideo || frameInFlight) return;
-  frameInFlight = true;
-  try {
-    const maxWidth = 960;
-    const scale = Math.min(1, maxWidth / cameraVideo.videoWidth);
-    captureCanvas.width = Math.round(cameraVideo.videoWidth * scale);
-    captureCanvas.height = Math.round(cameraVideo.videoHeight * scale);
-    captureContext.drawImage(cameraVideo, 0, 0, captureCanvas.width, captureCanvas.height);
-    const blob = await new Promise((resolve) => captureCanvas.toBlob(resolve, 'image/jpeg', 0.78));
-    if (!blob || !captureRunning) return;
-    const response = await fetch('/frame', {
-      method: 'POST',
-      headers: { 'Content-Type': 'image/jpeg' },
-      body: blob,
-    });
-    if (!response.ok) throw new Error('Frame inference failed');
-    const annotated = await response.blob();
-    feed.src = URL.createObjectURL(annotated);
-  } catch (error) {
-    setText('#status', error.message);
-  } finally {
-    frameInFlight = false;
-    if (captureRunning) window.setTimeout(captureLoop, 120);
-  }
-}
-
-async function startPhoneCamera() {
-  cameraStream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } },
-    audio: false,
-  });
-  cameraVideo = document.createElement('video');
-  cameraVideo.autoplay = true;
-  cameraVideo.playsInline = true;
-  cameraVideo.srcObject = cameraStream;
-  await cameraVideo.play();
-  captureCanvas = document.createElement('canvas');
-  captureContext = captureCanvas.getContext('2d');
-  captureRunning = true;
-  captureLoop();
-}
-
-function stopPhoneCamera() {
-  captureRunning = false;
-  frameInFlight = false;
-  if (cameraStream) cameraStream.getTracks().forEach((track) => track.stop());
-  cameraStream = null;
-  cameraVideo = null;
-  captureCanvas = null;
-  captureContext = null;
-}
 
 function speak(text, alertId = null) {
   if (!voice.checked || !('speechSynthesis' in window) || !text) return;
@@ -199,10 +140,10 @@ routeButton.addEventListener('click', async () => {
   }
 });
 
-start.addEventListener('click', async () => {
-  start.disabled = true;
-  feed.src = `/stream?stamp=${Date.now()}`;
+start.addEventListener('click', () => {
+  feed.src = `/stream?source=0&stamp=${Date.now()}`;
   wrap.classList.add('active');
+  start.disabled = true;
   stop.disabled = false;
   startLocationUpdates();
   poller = setInterval(refreshState, 500);
@@ -210,7 +151,6 @@ start.addEventListener('click', async () => {
 });
 
 stop.addEventListener('click', () => {
-  stopPhoneCamera();
   feed.src = '';
   wrap.classList.remove('active');
   start.disabled = false;

@@ -333,7 +333,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(encoded.tobytes())
                 self.wfile.write(b"\r\n")
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+        except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
             cap.release()
