@@ -61,7 +61,7 @@ def main():
     # Second model: stairs, poles, pillars, cones... (classes COCO doesn't know).
     hazard_detector = None
     if not args.no_hazards and Path(args.hazard_weights).exists():
-        hazard_detector = Detector(args.hazard_weights, conf=args.conf, all_classes=True,
+        hazard_detector = Detector(args.hazard_weights, conf=min(args.conf, 0.15), all_classes=True,
                        class_conf=HAZARD_CLASS_CONF, id_offset=100_000)
     elif not args.no_hazards:
         print(f"No hazard model at {args.hazard_weights}: COCO classes only.")

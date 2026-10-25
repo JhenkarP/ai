@@ -25,15 +25,17 @@ CLASS_WEIGHT = {
     "car": 1.0, "bus": 1.0, "truck": 1.0, "train": 1.0, "motorcycle": 1.0,
     "bicycle": 0.9, "person": 0.7, "dog": 0.6,
     # Street hazards (our phase 6 model). Stairs: a fall is among the worst accidents.
-    "stairs": 1.0, "pole": 0.8, "pillar": 0.8, "obstacle": 0.7, "cone": 0.6,
+    "stairs": 1.0, "stairs_up": 1.0, "stairs_down": 1.0,
+    "pole": 0.8, "pillar": 0.8, "obstacle": 0.7, "cone": 0.6,
+    "door_closed": 1.0, "door_open": 0.4,
 }
-HAZARD_CLASSES = {"stairs", "pole", "pillar", "obstacle", "cone", "bin"}
+HAZARD_CLASSES = {"stairs", "pole", "pillar", "obstacle", "cone", "bin", "door_closed"}
 DEFAULT_WEIGHT = 0.6      # static objects: bench, chair, potted plant, hydrant...
 OBSTACLE_WEIGHT = 0.8     # unknown obstacle found by the 3D corridor
 HEAD_LEVEL_WEIGHT = 1.0   # a cane can't detect it: treat it as seriously as a car
 
 MIN_PERSISTENCE = 0.2     # s an alert must exist before being spoken (kills 1-frame false positives)
-MIN_GAP = 2.0             # s between two messages, so the user can process each one
+MIN_GAP = 0.1             # s between two messages, so priority changes are announced quickly
 REPEAT_AFTER = 5.0        # s before repeating an alert about the same thing...
 REPEAT_IF_CLOSER = 1.0    # ...and only if it got at least this much closer
 
@@ -49,6 +51,7 @@ class Alert:
     approaching: bool = False
     head_level: bool = False
     guidance: str | None = None
+    path_priority: bool = False
 
 
 def clip01(x: float) -> float:
@@ -73,13 +76,26 @@ def rank_alerts(detections: list[Detection], path: PathStatus | None) -> list[Al
     """Turn raw perception into a list of alerts, most urgent first."""
     alerts = []
     for det in detections:
-        if det.distance is None or det.distance > MAX_DISTANCE or det.track_id is None:
+        if det.class_name in {"door_open", "door_closed"} and (
+            det.distance is None or det.distance >= 3.0 or not det.in_path):
+            continue
+        if det.distance is None or (det.distance > MAX_DISTANCE and not det.in_path):
             continue  # no track id = not confirmed over several frames yet
-        weight = CLASS_WEIGHT.get(det.class_name, DEFAULT_WEIGHT)
+        label = det.class_name
+        if det.class_name == "stairs" and det.direction in {"up", "down"}:
+            label = f"stairs_{det.direction}"
+        if det.track_id is None:
+            if not det.in_path and label not in {"stairs_up", "stairs_down"}:
+                continue  # ordinary detections still require tracker confirmation
+            alert_key = f"{label}_{det.clock or 12}"
+        else:
+            alert_key = det.track_id
+        weight = CLASS_WEIGHT.get(label, DEFAULT_WEIGHT)
         proximity_range = HAZARD_PROXIMITY_RANGE if det.class_name in HAZARD_CLASSES else PROXIMITY_RANGE
         u = urgency(det.distance, det.ttc, det.in_path, weight, proximity_range)
-        alerts.append(Alert(det.track_id, det.class_name, det.distance, det.clock or 12, u,
-                            level=0, approaching=det.ttc is not None))
+        alerts.append(Alert(alert_key, label, det.distance, det.clock or 12, u,
+                    level=0, approaching=det.ttc is not None,
+                    path_priority=det.in_path))
 
     if path is not None and path.blocked:
         # If YOLO already knows what blocks the path, its name is more useful than "obstacle".
@@ -94,17 +110,27 @@ def rank_alerts(detections: list[Detection], path: PathStatus | None) -> list[Al
             u = urgency(path.distance, path.ttc, True, weight)
             alerts.append(Alert("path", "obstacle", path.distance, path.clock or 12, u, level=0,
                                 approaching=path.ttc is not None, head_level=path.head_level,
-                                guidance=path.guidance))
+                                guidance=path.guidance, path_priority=True))
 
     for a in alerts:
-        a.level = URGENT if a.urgency >= URGENT_THRESHOLD else (
+        # A red box means the object is in the walking path. That is an immediate
+        # safety event, independent of distance, TTC, or persistence scoring.
+        a.level = URGENT if a.path_priority or a.urgency >= URGENT_THRESHOLD else (
             WARNING if a.urgency >= WARNING_THRESHOLD else 0)
+        if a.path_priority and a.level == 0:
+            a.level = WARNING
     if path is not None and path.guidance:
         in_path_keys = {det.track_id for det in detections if det.in_path}
         for alert in alerts:
             if alert.key == "path" or alert.key in in_path_keys:
                 alert.guidance = path.guidance
-    return sorted([a for a in alerts if a.level], key=lambda a: a.urgency, reverse=True)
+    def priority(a: Alert) -> tuple[int, int, int, int, float]:
+        # Stop-level danger first, then anything shown in red, then the user's
+        # requested 11 o'clock direction, and finally numeric urgency.
+        stair_priority = a.label in {"stairs_up", "stairs_down"} and a.path_priority
+        return (a.level == URGENT, stair_priority, a.path_priority, a.clock == 11, a.urgency)
+
+    return sorted([a for a in alerts if a.level], key=priority, reverse=True)
 
 
 class Announcer:
@@ -130,9 +156,9 @@ class Announcer:
         return None
 
     def _should_say(self, t: float, a: Alert) -> bool:
-        if t - self.first_seen[a.key] < MIN_PERSISTENCE:
+        if not a.path_priority and t - self.first_seen[a.key] < MIN_PERSISTENCE:
             return False  # might be a 1-frame false positive (remember the hydrant)
-        if a.level < URGENT and t - self.last_message_time < MIN_GAP:
+        if not a.path_priority and a.level < URGENT and t - self.last_message_time < MIN_GAP:
             return False  # only an URGENT alert may cut in right after another message
 
         previous = self.spoken.get(a.key)
@@ -148,21 +174,27 @@ class Announcer:
 # ----- Message wording -----------------------------------------------------------------
 
 LABELS = {
+    "en": {"door_open": "door open", "door_closed": "door closed",
+           "stairs_up": "stairs going up", "stairs_down": "stairs going down"},
     "fr": {"person": "personne", "bicycle": "vélo", "car": "voiture", "motorcycle": "moto",
            "bus": "bus", "truck": "camion", "train": "train", "traffic light": "feu",
            "stop sign": "panneau stop", "fire hydrant": "borne incendie",
            "parking meter": "horodateur", "bench": "banc", "chair": "chaise",
            "potted plant": "plante", "dog": "chien", "cat": "chat", "suitcase": "valise",
            "obstacle": "obstacle", "stairs": "escalier", "pole": "poteau", "pillar": "pilier",
-           "cone": "cône", "bin": "poubelle"},
+           "cone": "cône", "bin": "poubelle", "stairs_up": "escalier montant",
+           "stairs_down": "escalier descendant", "door_open": "porte ouverte",
+           "door_closed": "porte fermée"},
 }
 TEMPLATES = {
     "en": {"ahead": "ahead", "clock": "at {h} o'clock", "near": "very close",
            "meters": "{n} meter", "meters_plural": "{n} meters", "stop": "Stop! ",
+        "careful": "Careful, ",
            "approaching": "{label} approaching", "head": "Watch your head! ",
            "keep": "Keep {side}"},
     "fr": {"ahead": "devant", "clock": "à {h} heures", "near": "tout près",
            "meters": "{n} mètre", "meters_plural": "{n} mètres", "stop": "Stop ! ",
+        "careful": "Attention, ",
            "approaching": "{label} qui approche", "head": "Attention à la tête ! ",
            "keep": "Gardez la {side}"},
 }
@@ -178,7 +210,12 @@ def message(alert: Alert, lang: str = "en") -> str:
     far = T["near"] if alert.distance < 1 else T["meters" if n == 1 else "meters_plural"].format(n=n)
 
     prefix = T["head"] if alert.head_level else (T["stop"] if alert.level == URGENT else "")
-    if alert.guidance:
+    if alert.label in {"stairs_up", "stairs_down"}:
+        text = f"{T['careful']}{label} {where}, {far}"
+        if alert.guidance:
+            side = alert.guidance.capitalize() if lang == "en" else ("gauche" if alert.guidance == "left" else "droite")
+            text += f". {T['keep'].format(side=side)}."
+    elif alert.guidance:
         text = f"{prefix}Path blocked, {far}"
         side = alert.guidance.capitalize() if lang == "en" else ("gauche" if alert.guidance == "left" else "droite")
         text += f". {T['keep'].format(side=side)}."

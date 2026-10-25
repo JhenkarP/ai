@@ -14,11 +14,14 @@ from blindnav.detector import Detection
 CAMERA_HEIGHT = 1.4         # m, phone held at chest height
 FOV_DEGREES = 70            # field of view along the longer image side (typical phone camera)
 PATH_HALF_WIDTH = 0.5       # m -> a 1 m wide corridor in front of the user
-PATH_LENGTH = 4.0           # m, how far ahead we look
+PATH_LENGTH = 3.0           # m, how far ahead we look
 MIN_OBSTACLE_HEIGHT = 0.25  # m above ground; lower = curb or bump, not a wall
 MAX_OBSTACLE_HEIGHT = 2.0   # m, includes head-level obstacles
 HEAD_LEVEL = 1.0            # m, obstacle with nothing below this = a white cane can't feel it
 MIN_OBSTACLE_POINTS = 15    # ignore isolated noisy points
+STAIR_MIN_POINTS = 12
+STAIR_MIN_DEPTH_RANGE = 0.5
+STAIR_SLOPE_THRESHOLD = 0.08
 
 
 def focal_length(shape: tuple) -> float:
@@ -122,7 +125,7 @@ def path_hazard(detections: list[Detection], status: PathStatus) -> Detection | 
         return None
     hazards = [
         det for det in detections
-        if det.class_name in {"stairs", "pole", "pillar", "bin", "cone", "obstacle"}
+        if det.class_name in {"stairs", "pole", "pillar", "bin", "cone", "obstacle", "door_closed"}
         and det.distance is not None
         and abs(det.distance - status.distance) < max(2.0, min(3.0, status.distance * 0.75))
     ]
@@ -130,6 +133,14 @@ def path_hazard(detections: list[Detection], status: PathStatus) -> Detection | 
         return None
     in_path = [det for det in hazards if det.in_path]
     return min(in_path or hazards, key=lambda det: abs(det.distance - status.distance))
+
+
+def keep_confirmed_stairs(detections: list[Detection]) -> list[Detection]:
+    """Keep stair boxes only when depth confirms an up or down direction."""
+    return [
+        detection for detection in detections
+        if detection.class_name != "stairs" or detection.direction in {"up", "down"}
+    ]
 
 
 class SpatialAnalyzer:
@@ -159,6 +170,10 @@ class SpatialAnalyzer:
         # 2. Any obstacle, known or not: points sticking up from the ground, inside the corridor.
         P = points * scale
         height = -(points @ normal + offset) * scale  # meters above the ground
+        for detection in detections:
+            if detection.class_name == "stairs":
+                detection.direction = self._stair_direction(
+                    P, height, xs, ys, detection.box)
         in_corridor = (np.abs(P[..., 0]) < PATH_HALF_WIDTH) & (P[..., 2] > 0) & (P[..., 2] < PATH_LENGTH)
         is_obstacle = in_corridor & (height > MIN_OBSTACLE_HEIGHT) & (height < MAX_OBSTACLE_HEIGHT)
 
@@ -181,6 +196,27 @@ class SpatialAnalyzer:
             elif abs(left_count - right_count) >= max(3, int(len(front_x) * 0.25)):
                 status.guidance = "right" if left_count > right_count else "left"
         return status
+
+    @staticmethod
+    def _stair_direction(points: np.ndarray, height: np.ndarray, xs: np.ndarray,
+                         ys: np.ndarray, box: tuple[int, int, int, int]) -> str | None:
+        x1, y1, x2, y2 = box
+        inside = (xs >= x1) & (xs <= x2) & (ys >= y1) & (ys <= y2)
+        values = points[inside]
+        elevations = height[inside]
+        valid = np.isfinite(values).all(axis=1) & np.isfinite(elevations) & (values[:, 2] > 0)
+        values, elevations = values[valid], elevations[valid]
+        if len(values) < STAIR_MIN_POINTS:
+            return None
+        depth = values[:, 2]
+        if float(depth.max() - depth.min()) < STAIR_MIN_DEPTH_RANGE:
+            return None
+        slope = float(np.polyfit(depth, elevations, 1)[0])
+        if slope < -STAIR_SLOPE_THRESHOLD:
+            return "up"
+        if slope > STAIR_SLOPE_THRESHOLD:
+            return "down"
+        return None
 
     @staticmethod
     def _corridor(normal, offset, scale, f, W, H) -> np.ndarray:

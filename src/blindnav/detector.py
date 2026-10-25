@@ -1,6 +1,7 @@
 """Object detection: what is in front of the user, and where in the image."""
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -14,10 +15,21 @@ NAVIGATION_CLASSES = {
     "bench", "chair", "potted plant", "dog", "cat", "suitcase",
 }
 
+# YOLO-World has no fixed COCO vocabulary. These prompts cover common indoor,
+# street, and navigation objects while keeping the real-time model manageable.
+WORLD_CLASSES = [
+    "person", "bicycle", "car", "motorcycle", "bus", "truck", "train",
+    "traffic light", "stop sign", "fire hydrant", "parking meter", "bench",
+    "chair", "table", "door", "stairs", "ramp", "curb", "pothole", "pole",
+    "pillar", "cone", "bin", "barrier", "fence", "dog", "cat", "backpack",
+    "handbag", "suitcase", "umbrella", "shopping cart", "bottle", "cup",
+    "laptop", "phone", "wheelchair", "stroller",
+]
+
 # Our street-hazard model (phase 6). Per-class confidence chosen from its TEST results:
 # - "obstacle" is a vague class and caused 66% of the false detections -> stricter.
 # - "bin" found only 3% of bins (36 training examples) -> disabled (threshold > 1).
-HAZARD_CLASS_CONF = {"obstacle": 0.5, "bin": 1.1}
+HAZARD_CLASS_CONF = {"stairs": 0.10, "obstacle": 0.5, "bin": 1.1}
 
 
 @dataclass
@@ -31,6 +43,7 @@ class Detection:
     track_id: int | None = None    # same object = same id across frames (filled in by the tracker)
     approach_speed: float | None = None  # m/s, > 0 = getting closer (filled in by risk analysis)
     ttc: float | None = None             # time-to-collision in seconds, None = not approaching
+    direction: str | None = None         # stair direction inferred from depth: "up" or "down"
 
 
 class Detector:
@@ -38,6 +51,9 @@ class Detector:
                  all_classes: bool = False, class_conf: dict[str, float] | None = None,
                  id_offset: int = 0):
         self.model = YOLO(weights)  # downloads the weights on first use
+        self.is_world_model = "world" in Path(weights).stem.lower()
+        if self.is_world_model:
+            self.model.set_classes(WORLD_CLASSES)
         self.conf = conf
         self.class_conf = class_conf or {}  # per-class thresholds overriding `conf`
         # Each model has its own tracker, and both number their tracks 1, 2, 3...

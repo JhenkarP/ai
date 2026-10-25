@@ -15,6 +15,7 @@ COLORS = {
     "bicycle": (240, 160, 60), "motorcycle": (240, 160, 60),
     # Street hazards from our own model (phase 6): orange family
     "stairs": (0, 140, 255), "pole": (0, 200, 255), "pillar": (0, 200, 255),
+    "door_open": (80, 200, 80), "door_closed": (0, 0, 255),
     "cone": (0, 100, 255), "obstacle": (0, 170, 255), "bin": (0, 170, 255),
 }
 DEFAULT_COLOR = (200, 200, 200)
@@ -32,15 +33,19 @@ def draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarra
         color = COLORS.get(det.class_name, DEFAULT_COLOR)
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
 
-        if det.in_path:
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), thickness * 2)  # red = in my way
-        if det.ttc is not None and det.ttc < DANGER_TTC:
+        if det.ttc is not None and det.ttc < DANGER_TTC and not det.in_path:
             color = DANGER_COLOR
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness * 3)
+        if det.in_path:
+            color = (0, 0, 255)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness * 2)  # red = immediate urgent alert
 
-        label = f"{det.class_name} {det.confidence:.2f}"
+        object_name = det.class_name
+        if det.class_name == "stairs" and det.direction in {"up", "down"}:
+            object_name = f"stairs {det.direction}"
+        label = f"{object_name} {det.confidence:.2f}"
         if det.distance is not None:
-            label = f"{det.class_name} {det.distance:.1f}m"
+            label = f"{object_name} {det.distance:.1f}m"
         if det.clock is not None:
             label += f" @{det.clock}h"
         if det.ttc is not None:
@@ -62,6 +67,18 @@ def draw_path(frame: np.ndarray, status: PathStatus,
         cv2.fillPoly(overlay, [status.corridor], color)
         cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, dst=frame)
         cv2.polylines(frame, [status.corridor], True, color, max(1, round(2 * scale)))
+        arrow_width = max(2, round(5 * scale))
+        if status.blocked and status.guidance:
+            center = (frame.shape[1] // 2, frame.shape[0] - int(75 * scale))
+            shift = int(frame.shape[1] * 0.2)
+            side = center[0] + (shift if status.guidance == "right" else -shift)
+            cv2.arrowedLine(frame, center, (side, center[1]), (0, 165, 255),
+                            arrow_width, tipLength=0.3)
+        elif not status.blocked:
+            near_center = tuple(np.mean(status.corridor[[0, 1]], axis=0).astype(int))
+            far_center = tuple(np.mean(status.corridor[[2, 3]], axis=0).astype(int))
+            cv2.arrowedLine(frame, near_center, far_center, (255, 220, 0),
+                            arrow_width, tipLength=0.25)
 
     ys, xs = status.obstacle_pixels
     for y, x in zip(ys, xs):

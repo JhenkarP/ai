@@ -3,22 +3,25 @@
 import argparse
 import cgi
 import json
+import os
 import shutil
 import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
 import cv2
 import numpy as np
 
-from blindnav.announcer import Alert, Announcer, WARNING, message, rank_alerts
+from blindnav.announcer import Alert, Announcer, URGENT, WARNING, message, rank_alerts
 from blindnav.depth import DepthEstimator, object_distance
 from blindnav.detector import HAZARD_CLASS_CONF, Detector
+from blindnav.navigation import NavigationManager
 from blindnav.risk import MotionTracker
-from blindnav.spatial import SpatialAnalyzer
+from blindnav.spatial import SpatialAnalyzer, keep_confirmed_stairs
 from blindnav.speech import LiveSpeaker
 from blindnav.visualize import TrailDrawer, draw_detections, draw_fps, draw_path
 
@@ -28,16 +31,52 @@ UPLOADS = ROOT / "data" / "uploads"
 state_lock = threading.Lock()
 inference_lock = threading.Lock()
 state = {"connected": False, "status": "Waiting for camera", "alert": None,
-         "alert_id": 0, "detections": 0, "fps": 0.0, "depth": False}
+         "alert_id": 0, "detections": 0, "fps": 0.0, "depth": False,
+         "location": None, "alert_time": 0.0, "urgent": False,
+         "navigation": {"active": False, "guidance": None, "event_id": 0}}
+navigation_lock = threading.Lock()
+navigation = NavigationManager()
+
+
+def _json_request(url: str) -> dict:
+    request = Request(url, headers={"User-Agent": "SafeStride-Assist/0.1"})
+    with urlopen(request, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _geocode(query: str) -> tuple[float, float, str]:
+    url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=" + quote(query)
+    results = _json_request(url)
+    if not results:
+        raise ValueError("Destination was not found")
+    result = results[0]
+    return float(result["lat"]), float(result["lon"]), result.get("display_name", query)
+
+
+def _walking_route(start: tuple[float, float], destination: tuple[float, float]) -> dict:
+    base = os.environ.get(
+        "SAFESTRIDE_ROUTING_URL",
+        "https://routing.openstreetmap.de/routed-foot/route/v1/driving",
+    )
+    coordinates = f"{start[1]},{start[0]};{destination[1]},{destination[0]}"
+    url = f"{base}/{coordinates}?overview=full&geometries=geojson&steps=true"
+    payload = _json_request(url)
+    routes = payload.get("routes", [])
+    if not routes:
+        raise ValueError("No walking route was found")
+    return routes[0]
 
 
 class InferenceEngine:
     def __init__(self, no_depth: bool, no_hazards: bool, depth_every: int = 2):
         self.detector = Detector()
         self.hazard_detector = None
+        self.door_detector = None
         if not no_hazards and Path("models/hazards.pt").exists():
             self.hazard_detector = Detector("models/hazards.pt", class_conf=HAZARD_CLASS_CONF,
                                             all_classes=True, id_offset=100_000)
+        if Path("models/doors.pt").exists():
+            self.door_detector = Detector("models/doors.pt", all_classes=True, id_offset=200_000)
         self.depth = None if no_depth else self._load_depth()
         self.depth_every = max(1, depth_every)
         self.depth_frame = None
@@ -66,6 +105,8 @@ class InferenceEngine:
         detections = self.detector.detect(image)
         if self.hazard_detector:
             detections += self.hazard_detector.detect(image)
+        if self.door_detector:
+            detections += self.door_detector.detect(image)
         path = None
         alert_text = None
         if self.depth:
@@ -75,6 +116,7 @@ class InferenceEngine:
             for detection in detections:
                 detection.distance = object_distance(depth, detection.box)
             path = self.spatial.analyze(depth, detections)
+            detections = keep_confirmed_stairs(detections)
             elapsed = time.perf_counter() - self.started
             self.motion.update(elapsed, detections, path, image.shape[0])
             alert = self.announcer.decide(elapsed, rank_alerts(detections, path))
@@ -91,6 +133,8 @@ class InferenceEngine:
                 self.audio.say(alert, alert_text)
                 self.last_guidance = path.guidance
                 self.last_guidance_time = elapsed
+        else:
+            detections = keep_confirmed_stairs(detections)
         self.trails.draw(image, detections)
         if path is not None:
             draw_path(image, path)
@@ -99,6 +143,8 @@ class InferenceEngine:
         with state_lock:
             if alert_text:
                 state["alert_id"] += 1
+                state["alert_time"] = time.time()
+                state["urgent"] = alert.level == URGENT
             state.update({"connected": True, "status": "Monitoring",
                           "detections": len(detections),
                           "fps": round(1 / max(time.perf_counter() - started, 0.001), 1),
@@ -132,6 +178,12 @@ class Handler(BaseHTTPRequestHandler):
         if urlparse(self.path).path == "/frame":
             self._frame()
             return
+        if urlparse(self.path).path == "/location":
+            self._location()
+            return
+        if urlparse(self.path).path == "/route":
+            self._route()
+            return
         if urlparse(self.path).path != "/upload":
             self.send_error(404)
             return
@@ -163,6 +215,72 @@ class Handler(BaseHTTPRequestHandler):
         Handler.source = str(saved)
         self._json({"ok": True, "name": original_name, "source": str(saved),
                     "message": f"{original_name} uploaded and ready"})
+
+    def _location(self):
+        content_length = int(self.headers.get("Content-Length", "0"))
+        if content_length <= 0 or content_length > 4096:
+            self.send_error(413, "Location payload is missing or too large")
+            return
+        try:
+            payload = json.loads(self.rfile.read(content_length))
+            location = {
+                "latitude": float(payload["latitude"]),
+                "longitude": float(payload["longitude"]),
+                "accuracy": float(payload["accuracy"]),
+                "heading": payload.get("heading"),
+                "speed": payload.get("speed"),
+                "timestamp": payload.get("timestamp"),
+            }
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            self.send_error(400, "Invalid location payload")
+            return
+        with state_lock:
+            state["location"] = location
+        with navigation_lock:
+            update = navigation.update(location["latitude"], location["longitude"])
+            state["navigation"] = {
+                **navigation.snapshot(),
+                "event_id": update.event_id,
+                "message": update.message,
+                "off_route": update.off_route,
+                "arrived": update.arrived,
+                "distance_remaining": update.distance_remaining,
+            }
+        self._json({"ok": True})
+
+    def _route(self):
+        content_length = int(self.headers.get("Content-Length", "0"))
+        if content_length <= 0 or content_length > 4096:
+            self.send_error(413, "Route payload is missing or too large")
+            return
+        try:
+            payload = json.loads(self.rfile.read(content_length))
+            destination_query = str(payload.get("destination", "")).strip()
+            if not destination_query:
+                raise ValueError("Destination is required")
+            with state_lock:
+                current = state.get("location")
+            if not current:
+                raise ValueError("Waiting for the browser GPS position")
+            destination = _geocode(destination_query)
+            route = _walking_route(
+                (current["latitude"], current["longitude"]),
+                (destination[0], destination[1]),
+            )
+            with navigation_lock:
+                update = navigation.set_route(route, (destination[0], destination[1]))
+                nav_state = {
+                    **navigation.snapshot(),
+                    "event_id": update.event_id,
+                    "message": "Route ready. Start walking.",
+                    "destination_name": destination[2],
+                    "distance_remaining": route.get("distance"),
+                }
+                navigation.last_message = nav_state["message"]
+                state["navigation"] = nav_state
+            self._json({"ok": True, "navigation": nav_state})
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            self.send_error(502 if isinstance(exc, OSError) else 400, str(exc))
 
     def _json(self, payload):
         body = json.dumps(payload).encode()

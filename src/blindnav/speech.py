@@ -32,13 +32,14 @@ class Synthesizer:
     hangs forever on its second runAndWait() call, so we skip the wrapper.
     """
 
-    def __init__(self, lang: str):
+    def __init__(self, lang: str, voice_index: int = 0):
         import comtypes.client  # created here: COM objects must live in the thread that uses them
         self.client = comtypes.client
         self.voice = self.client.CreateObject("SAPI.SpVoice")
-        for token in self.voice.GetVoices():
-            if VOICES[lang] in token.GetDescription():
-                self.voice.Voice = token
+        voices = [token for token in self.voice.GetVoices()
+                  if VOICES[lang] in token.GetDescription()]
+        if voices:
+            self.voice.Voice = voices[min(voice_index, len(voices) - 1)]
         self.voice.Rate = SPEECH_RATE
         self.cache: dict[str, np.ndarray] = {}
 
@@ -92,6 +93,10 @@ def render(alert: Alert, text: str, synth: Synthesizer) -> np.ndarray:
                            stereo(voice, 0.3 * pan)]).astype(np.float32)
 
 
+def _synth_for(alert: Alert, primary: Synthesizer, secondary: Synthesizer) -> Synthesizer:
+    return primary if alert.path_priority else secondary
+
+
 class LiveSpeaker:
     """Plays alerts in a background thread, so the video loop never waits for the audio."""
 
@@ -112,10 +117,11 @@ class LiveSpeaker:
         import comtypes
         import sounddevice as sd
         comtypes.CoInitialize()  # Windows speech uses COM, which must be started per thread
-        synth = Synthesizer(self.lang)
+        primary = Synthesizer(self.lang, voice_index=0)
+        secondary = Synthesizer(self.lang, voice_index=1)
         while True:
             alert, text = self.queue.get()
-            sd.play(render(alert, text, synth), SAMPLE_RATE)
+            sd.play(render(alert, text, _synth_for(alert, primary, secondary)), SAMPLE_RATE)
             sd.wait()
 
 
@@ -130,15 +136,17 @@ class SoundtrackRecorder:
         self.events.append((t, alert, text))
 
     def mux(self, video_path: str, duration: float, out_path: str) -> None:
-        synth = Synthesizer(self.lang)
+        primary = Synthesizer(self.lang, voice_index=0)
+        secondary = Synthesizer(self.lang, voice_index=1)
         track = np.zeros((int(duration * SAMPLE_RATE) + SAMPLE_RATE, 2), dtype=np.float32)
-        for i, (t, alert, text) in enumerate(self.events):
-            clip = render(alert, text, synth)
-            start = int(t * SAMPLE_RATE)
-            # A message is cut when the next one starts (that's what interruption sounds like).
-            end = int(self.events[i + 1][0] * SAMPLE_RATE) if i + 1 < len(self.events) else len(track)
-            clip = clip[:max(0, min(len(clip), end - start, len(track) - start))]
-            track[start:start + len(clip)] = clip
+        next_available = 0
+        for t, alert, text in self.events:
+            clip = render(alert, text, _synth_for(alert, primary, secondary))
+            start = max(int(t * SAMPLE_RATE), next_available)
+            end = min(start + len(clip), len(track))
+            if start < end:
+                track[start:end] = clip[:end - start]
+                next_available = end
 
         wav_path = os.path.join(tempfile.gettempdir(), "blindnav_track.wav")
         with wave.open(wav_path, "wb") as w:
@@ -152,5 +160,6 @@ class SoundtrackRecorder:
         subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error",
                         "-i", video_path, "-i", wav_path,
                         "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",  # H.264 needs even sizes
-                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-threads", "0",
+                        "-pix_fmt", "yuv420p", "-crf", "23",
                         "-c:a", "aac", "-shortest", out_path], check=True)
