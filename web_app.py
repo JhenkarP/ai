@@ -100,7 +100,7 @@ class InferenceEngine:
                 state["status"] = f"Depth unavailable: {type(exc).__name__}"
             return None
 
-    def frame(self, image: np.ndarray):
+    def frame(self, image: np.ndarray, speak_alert: bool = True):
         self.frame_index += 1
         started = time.perf_counter()
         detections = self.detector.detect(image)
@@ -125,13 +125,15 @@ class InferenceEngine:
                 if path.guidance and alert.guidance is None:
                     alert.guidance = path.guidance
                 alert_text = message(alert)
-                self.audio.say(alert, alert_text)
+                if speak_alert:
+                    self.audio.say(alert, alert_text)
             elif path.guidance and (path.guidance != self.last_guidance or
                                     elapsed - self.last_guidance_time > 5.0):
                 alert = Alert("guidance", "obstacle", path.distance, path.clock or 12,
                               0.0, WARNING, guidance=path.guidance)
                 alert_text = message(alert)
-                self.audio.say(alert, alert_text)
+                if speak_alert:
+                    self.audio.say(alert, alert_text)
                 self.last_guidance = path.guidance
                 self.last_guidance_time = elapsed
         else:
@@ -363,7 +365,7 @@ class Handler(BaseHTTPRequestHandler):
         if image.shape[1] > 1280:
             image = cv2.resize(image, (1280, int(image.shape[0] * 1280 / image.shape[1])))
         with inference_lock:
-            annotated = self.engine.frame(image)
+            annotated = self.engine.frame(image, speak_alert=not mobile_json)
         ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 82])
         if not ok:
             self.send_error(500, "Could not encode annotated frame")

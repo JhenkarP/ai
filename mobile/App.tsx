@@ -1,4 +1,5 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Speech from 'expo-speech';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -34,6 +35,7 @@ export default function App() {
   const [alert, setAlert] = useState('No active alert');
   const [depth, setDepth] = useState(false);
   const [fps, setFps] = useState(0);
+  const lastAlert = useRef('');
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
 
@@ -64,6 +66,11 @@ export default function App() {
       setAlert(state.alert ?? 'No active alert');
       setDepth(Boolean(state.depth));
       setFps(Number(state.fps) || 0);
+      if (state.alert && state.alert !== lastAlert.current) {
+        lastAlert.current = state.alert;
+        Speech.stop();
+        Speech.speak(state.alert, { rate: 0.95, pitch: 1.0 });
+      }
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Connection failed');
     } finally {
