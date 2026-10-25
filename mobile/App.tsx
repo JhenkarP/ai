@@ -118,32 +118,36 @@ export default function App() {
     }
     setLocationStatus('Finding current location');
     await publishLocation(await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }));
-    headingWatcher.current = await Location.watchHeadingAsync((heading) => {
-      const facing = heading.trueHeading >= 0 ? heading.trueHeading : heading.magHeading;
-      if (facing >= 0) {
-        headingRef.current = facing;
-        const cardinal = cardinalDirection(facing);
-        setHeadingStatus(`Facing ${cardinal} (${Math.round(facing)} degrees)`);
-        if (navigationActive.current && cardinal !== lastSpokenCardinal.current) {
-          lastSpokenCardinal.current = cardinal;
-          Speech.speak(`You are facing ${cardinal}.`, { rate: 0.85, pitch: 0.85 });
+    if (!headingWatcher.current) {
+      headingWatcher.current = await Location.watchHeadingAsync((heading) => {
+        const facing = heading.trueHeading >= 0 ? heading.trueHeading : heading.magHeading;
+        if (facing >= 0) {
+          headingRef.current = facing;
+          const cardinal = cardinalDirection(facing);
+          setHeadingStatus(`Facing ${cardinal} (${Math.round(facing)} degrees)`);
+          if (navigationActive.current && cardinal !== lastSpokenCardinal.current) {
+            lastSpokenCardinal.current = cardinal;
+            Speech.speak(`You are facing ${cardinal}.`, { rate: 0.85, pitch: 0.85 });
+          }
         }
-      }
-    });
+      });
+    }
   }
 
   async function startLocationUpdates() {
     await ensureCurrentLocation();
-    locationWatcher.current = await Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.High, distanceInterval: 5, timeInterval: 3000 },
-      async (position) => {
-        try {
-          await publishLocation(position);
-        } catch (_) {
-          setLocationStatus('Location update failed');
-        }
-      },
-    );
+    if (!locationWatcher.current) {
+      locationWatcher.current = await Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.High, distanceInterval: 5, timeInterval: 3000 },
+        async (position) => {
+          try {
+            await publishLocation(position);
+          } catch (_) {
+            setLocationStatus('Location update failed');
+          }
+        },
+      );
+    }
   }
 
   async function setRoute() {
