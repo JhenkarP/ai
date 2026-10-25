@@ -50,6 +50,7 @@ export default function App() {
   const [destination, setDestination] = useState('');
   const [routeStatus, setRouteStatus] = useState('No active route');
   const [locationStatus, setLocationStatus] = useState('Location inactive');
+  const [headingStatus, setHeadingStatus] = useState('Facing unavailable');
   const [navigation, setNavigation] = useState<NavigationState>({
     active: false, guidance: null, event_id: 0, distance_remaining: null,
   });
@@ -58,10 +59,13 @@ export default function App() {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
   const locationWatcher = useRef<Location.LocationSubscription | null>(null);
+  const headingWatcher = useRef<Location.LocationSubscription | null>(null);
+  const headingRef = useRef<number | null>(null);
 
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current);
     locationWatcher.current?.remove();
+    headingWatcher.current?.remove();
     Speech.stop();
   }, []);
 
@@ -79,11 +83,15 @@ export default function App() {
 
   async function publishLocation(position: Location.LocationObject) {
     const { latitude, longitude, accuracy, heading, speed } = position.coords;
+    const facing = headingRef.current ?? heading;
     setLocationStatus(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+    if (facing !== null && facing !== undefined && facing >= 0) {
+      setHeadingStatus(`Facing ${Math.round(facing)} degrees`);
+    }
     await fetch(`${backend.replace(/\/$/, '')}/location`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ latitude, longitude, accuracy, heading, speed, timestamp: position.timestamp }),
+      body: JSON.stringify({ latitude, longitude, accuracy, heading: facing, speed, timestamp: position.timestamp }),
     });
     const state = await fetch(`${backend.replace(/\/$/, '')}/state`).then((result) => result.json());
     applyNavigation(state);
@@ -100,6 +108,13 @@ export default function App() {
     }
     setLocationStatus('Finding current location');
     await publishLocation(await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }));
+    headingWatcher.current = await Location.watchHeadingAsync((heading) => {
+      const facing = heading.trueHeading >= 0 ? heading.trueHeading : heading.magHeading;
+      if (facing >= 0) {
+        headingRef.current = facing;
+        setHeadingStatus(`Facing ${Math.round(facing)} degrees`);
+      }
+    });
   }
 
   async function startLocationUpdates() {
@@ -188,6 +203,8 @@ export default function App() {
     setStatus('Stopped');
     locationWatcher.current?.remove();
     locationWatcher.current = null;
+    headingWatcher.current?.remove();
+    headingWatcher.current = null;
     if (timer.current) clearTimeout(timer.current);
   }
 
@@ -253,6 +270,7 @@ export default function App() {
         )}
         {navigation.off_route && <Text style={styles.routeWarning}>Off route</Text>}
         <Text style={styles.locationText}>{locationStatus}</Text>
+        <Text style={styles.locationText}>{headingStatus}</Text>
       </View>
       <View style={styles.stats}>
         <Stat label="STATUS" value={status} />
