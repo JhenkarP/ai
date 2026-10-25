@@ -240,7 +240,7 @@ class Handler(BaseHTTPRequestHandler):
         with state_lock:
             state["location"] = location
         with navigation_lock:
-            update = navigation.update(location["latitude"], location["longitude"])
+            update = navigation.update(location["latitude"], location["longitude"], location.get("heading"))
             state["navigation"] = {
                 **navigation.snapshot(),
                 "event_id": update.event_id,

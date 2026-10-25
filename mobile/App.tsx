@@ -25,6 +25,7 @@ type NavigationState = {
   distance_remaining: number | null;
   off_route?: boolean;
   arrived?: boolean;
+  aligned_to_route?: boolean;
 };
 
 function bytesToBase64(bytes: Uint8Array) {
@@ -81,7 +82,7 @@ export default function App() {
     const next = state?.navigation;
     if (!next) return;
     setNavigation(next);
-    const guidance = next.guidance ?? next.message;
+    const guidance = next.message ?? next.guidance;
     navigationActive.current = Boolean(next.active);
     setRouteStatus(next.active ? (guidance ?? 'Route active') : 'No active route');
     if (guidance && next.event_id !== lastNavigationEvent.current && !state?.urgent) {

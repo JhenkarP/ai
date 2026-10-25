@@ -36,6 +36,19 @@ def _format_distance(distance: float) -> str:
     return f"{round(distance / 10) * 10} meters"
 
 
+def _bearing_degrees(first: tuple[float, float], second: tuple[float, float]) -> float:
+    first_lat = math.radians(first[0])
+    delta_lon = math.radians(second[1] - first[1])
+    second_lat = math.radians(second[0])
+    y = math.sin(delta_lon) * math.cos(second_lat)
+    x = math.cos(first_lat) * math.sin(second_lat) - math.sin(first_lat) * math.cos(second_lat) * math.cos(delta_lon)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def _heading_delta(current: float, target: float) -> float:
+    return (target - current + 540) % 360 - 180
+
+
 class NavigationManager:
     """Track a walking route and emit a new voice event only when guidance changes."""
 
@@ -54,6 +67,8 @@ class NavigationManager:
         self.last_event_time = -float("inf")
         self.last_position: tuple[float, float] | None = None
         self.distance_remaining: float | None = None
+        self.heading: float | None = None
+        self.aligned_to_route = False
         self.arrived = False
 
     def set_route(self, route: dict[str, Any], destination: tuple[float, float]) -> NavigationUpdate:
@@ -71,6 +86,8 @@ class NavigationManager:
         self.last_event_time = -float("inf")
         self.event_id += 1
         self.distance_remaining = route.get("distance")
+        self.heading = None
+        self.aligned_to_route = False
         return NavigationUpdate(active=True, event_id=self.event_id, step_index=0,
                                 distance_remaining=route.get("distance"))
 
@@ -81,12 +98,16 @@ class NavigationManager:
         self.destination = None
         self.step_index = 0
         self.distance_remaining = None
+        self.heading = None
+        self.aligned_to_route = False
         self.arrived = False
         self.last_message = None
 
-    def update(self, latitude: float, longitude: float) -> NavigationUpdate:
+    def update(self, latitude: float, longitude: float, heading: float | None = None) -> NavigationUpdate:
         position = (latitude, longitude)
         self.last_position = position
+        if heading is not None and 0 <= heading < 360:
+            self.heading = heading
         if self.route is None or self.destination is None:
             return NavigationUpdate()
 
@@ -100,6 +121,15 @@ class NavigationManager:
         if deviation > self.deviation_meters:
             return self._event("You are off route. Please stop while the route is recalculated.", remaining,
                                off_route=True)
+
+        route_point = self._next_route_point(position)
+        if self.heading is not None and route_point is not None:
+            delta = _heading_delta(self.heading, _bearing_degrees(position, route_point))
+            if abs(delta) > 30:
+                self.aligned_to_route = False
+                direction = "right" if delta > 0 else "left"
+                return self._event(f"Turn {direction} to face the road, then walk straight.", remaining)
+            self.aligned_to_route = True
 
         while self.step_index < len(self.steps) - 1:
             maneuver = self.steps[self.step_index].get("maneuver", {})
@@ -140,6 +170,14 @@ class NavigationManager:
             return 0.0
         return min(distance_meters(position, point) for point in self.geometry)
 
+    def _next_route_point(self, position: tuple[float, float]) -> tuple[float, float] | None:
+        if not self.geometry:
+            return None
+        nearest_index = min(range(len(self.geometry)), key=lambda index: distance_meters(position, self.geometry[index]))
+        if nearest_index + 1 < len(self.geometry):
+            return self.geometry[nearest_index + 1]
+        return self.geometry[nearest_index]
+
     @staticmethod
     def _instruction(maneuver: dict[str, Any]) -> str:
         maneuver_type = maneuver.get("type", "continue")
@@ -163,5 +201,7 @@ class NavigationManager:
             "event_id": self.event_id,
             "destination": self.destination,
             "distance_remaining": self.distance_remaining,
+            "heading": self.heading,
+            "aligned_to_route": self.aligned_to_route,
             "guidance": self.last_message,
         }
