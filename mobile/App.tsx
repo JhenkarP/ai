@@ -22,6 +22,8 @@ type NavigationState = {
   guidance: string | null;
   event_id: number;
   distance_remaining: number | null;
+  off_route?: boolean;
+  arrived?: boolean;
 };
 
 function bytesToBase64(bytes: Uint8Array) {
@@ -225,6 +227,12 @@ export default function App() {
       <View style={styles.navigationBox}>
         <Text style={styles.eyebrow}>NAVIGATION</Text>
         <Text style={styles.navigationText}>{routeStatus}</Text>
+        {navigation.distance_remaining !== null && (
+          <Text style={styles.locationText}>
+            {navigation.arrived ? 'Arrived' : `${Math.round(navigation.distance_remaining)} m remaining`}
+          </Text>
+        )}
+        {navigation.off_route && <Text style={styles.routeWarning}>Off route</Text>}
         <Text style={styles.locationText}>{locationStatus}</Text>
       </View>
       <View style={styles.stats}>
@@ -281,6 +289,7 @@ const styles = StyleSheet.create({
   navigationBox: { backgroundColor: '#142127', borderLeftColor: '#8ca9e3', borderLeftWidth: 3, padding: 14, marginTop: 12, marginBottom: 14 },
   navigationText: { color: '#f1f7f4', fontSize: 16, fontWeight: '600', marginTop: 7 },
   locationText: { color: '#8a9aa1', fontSize: 12, marginTop: 7 },
+  routeWarning: { color: '#ffb86b', fontSize: 13, fontWeight: '800', marginTop: 7 },
   primaryButton: { alignItems: 'center', backgroundColor: '#8ce3c3', borderRadius: 6, paddingVertical: 15 },
   stopButton: { backgroundColor: '#dc7668' },
   primaryText: { color: '#0b1418', fontSize: 16, fontWeight: '800' },

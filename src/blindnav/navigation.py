@@ -53,6 +53,7 @@ class NavigationManager:
         self.last_message: str | None = None
         self.last_event_time = -float("inf")
         self.last_position: tuple[float, float] | None = None
+        self.distance_remaining: float | None = None
         self.arrived = False
 
     def set_route(self, route: dict[str, Any], destination: tuple[float, float]) -> NavigationUpdate:
@@ -69,6 +70,7 @@ class NavigationManager:
         self.last_message = None
         self.last_event_time = -float("inf")
         self.event_id += 1
+        self.distance_remaining = route.get("distance")
         return NavigationUpdate(active=True, event_id=self.event_id, step_index=0,
                                 distance_remaining=route.get("distance"))
 
@@ -78,6 +80,7 @@ class NavigationManager:
         self.geometry = []
         self.destination = None
         self.step_index = 0
+        self.distance_remaining = None
         self.arrived = False
         self.last_message = None
 
@@ -88,6 +91,7 @@ class NavigationManager:
             return NavigationUpdate()
 
         remaining = distance_meters(position, self.destination)
+        self.distance_remaining = remaining
         if remaining <= self.arrival_meters:
             self.arrived = True
             return self._event("You have arrived at your destination.", remaining, arrived=True)
@@ -158,6 +162,6 @@ class NavigationManager:
             "step_index": self.step_index,
             "event_id": self.event_id,
             "destination": self.destination,
-            "distance_remaining": None,
+            "distance_remaining": self.distance_remaining,
             "guidance": self.last_message,
         }
