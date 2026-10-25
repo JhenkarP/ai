@@ -77,26 +77,38 @@ export default function App() {
     }
   }
 
-  async function startLocationUpdates() {
-    const permission = await Location.requestForegroundPermissionsAsync();
+  async function publishLocation(position: Location.LocationObject) {
+    const { latitude, longitude, accuracy, heading, speed } = position.coords;
+    setLocationStatus(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+    await fetch(`${backend.replace(/\/$/, '')}/location`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ latitude, longitude, accuracy, heading, speed, timestamp: position.timestamp }),
+    });
+    const state = await fetch(`${backend.replace(/\/$/, '')}/state`).then((result) => result.json());
+    applyNavigation(state);
+  }
+
+  async function ensureCurrentLocation() {
+    let permission = await Location.getForegroundPermissionsAsync();
+    if (permission.status !== Location.PermissionStatus.GRANTED) {
+      permission = await Location.requestForegroundPermissionsAsync();
+    }
     if (permission.status !== Location.PermissionStatus.GRANTED) {
       setLocationStatus('Location permission denied');
-      return;
+      throw new Error('Allow location permission before creating a route');
     }
     setLocationStatus('Finding current location');
+    await publishLocation(await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }));
+  }
+
+  async function startLocationUpdates() {
+    await ensureCurrentLocation();
     locationWatcher.current = await Location.watchPositionAsync(
       { accuracy: Location.Accuracy.High, distanceInterval: 5, timeInterval: 3000 },
       async (position) => {
-        const { latitude, longitude, accuracy, heading, speed } = position.coords;
-        setLocationStatus(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
         try {
-          await fetch(`${backend.replace(/\/$/, '')}/location`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ latitude, longitude, accuracy, heading, speed, timestamp: position.timestamp }),
-          });
-          const state = await fetch(`${backend.replace(/\/$/, '')}/state`).then((result) => result.json());
-          applyNavigation(state);
+          await publishLocation(position);
         } catch (_) {
           setLocationStatus('Location update failed');
         }
@@ -107,6 +119,7 @@ export default function App() {
   async function setRoute() {
     if (!destination.trim()) return;
     try {
+      await ensureCurrentLocation();
       const response = await fetch(`${backend.replace(/\/$/, '')}/route`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
