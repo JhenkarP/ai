@@ -23,6 +23,12 @@ function bytesToBase64(bytes: Uint8Array) {
   return btoa(binary);
 }
 
+function base64ToBlob(base64: string) {
+  const binary = atob(base64);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return new Blob([bytes], { type: 'image/jpeg' });
+}
+
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const camera = useRef<CameraView>(null);
@@ -51,11 +57,10 @@ export default function App() {
         skipProcessing: true,
       });
       if (!photo?.base64) throw new Error('Camera returned no frame');
-      const source = await fetch(`data:image/jpeg;base64,${photo.base64}`);
       const response = await fetch(`${backend.replace(/\/$/, '')}/frame`, {
         method: 'POST',
         headers: { 'Content-Type': 'image/jpeg' },
-        body: await source.blob(),
+        body: base64ToBlob(photo.base64),
       });
       if (!response.ok) throw new Error(`Backend error ${response.status}`);
       const bytes = new Uint8Array(await response.arrayBuffer());
