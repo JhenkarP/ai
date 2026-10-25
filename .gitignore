@@ -1,6 +1,10 @@
 data/videos/
 data/uploads/
 data/outputs/
+data/datasets/
+data/training/
+data/stairs.png
+data/stairs_yoloworld_output.png
 models/
 *.pt
 *.onnx
