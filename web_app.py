@@ -276,6 +276,7 @@ class Handler(BaseHTTPRequestHandler):
                     **navigation.snapshot(),
                     "event_id": update.event_id,
                     "message": "Route ready. Start walking.",
+                    "guidance": "Route ready. Start walking.",
                     "destination_name": destination[2],
                     "distance_remaining": route.get("distance"),
                 }

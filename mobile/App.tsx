@@ -20,6 +20,7 @@ const DEFAULT_BACKEND = 'http://10.26.49.63:8765';
 type NavigationState = {
   active: boolean;
   guidance: string | null;
+  message?: string | null;
   event_id: number;
   distance_remaining: number | null;
   off_route?: boolean;
@@ -68,10 +69,11 @@ export default function App() {
     const next = state?.navigation;
     if (!next) return;
     setNavigation(next);
-    setRouteStatus(next.active ? (next.guidance ?? 'Route active') : 'No active route');
-    if (next.guidance && next.event_id !== lastNavigationEvent.current && !state?.urgent) {
+    const guidance = next.guidance ?? next.message;
+    setRouteStatus(next.active ? (guidance ?? 'Route active') : 'No active route');
+    if (guidance && next.event_id !== lastNavigationEvent.current && !state?.urgent) {
       lastNavigationEvent.current = next.event_id;
-      Speech.speak(next.guidance, { rate: 0.85, pitch: 0.85 });
+      Speech.speak(guidance, { rate: 0.85, pitch: 0.85 });
     }
   }
 
@@ -110,7 +112,11 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ destination: destination.trim() }),
       });
-      if (!response.ok) throw new Error('Could not create route');
+      if (!response.ok) {
+        const body = await response.text();
+        const detail = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        throw new Error(detail || `Route failed (${response.status})`);
+      }
       const result = await response.json();
       applyNavigation({ navigation: result.navigation });
     } catch (error) {
