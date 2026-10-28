@@ -64,6 +64,7 @@ class NavigationManager:
         self.step_index = 0
         self.event_id = 0
         self.last_message: str | None = None
+        self.last_key: str | None = None
         self.last_event_time = -float("inf")
         self.last_position: tuple[float, float] | None = None
         self.distance_remaining: float | None = None
@@ -85,6 +86,7 @@ class NavigationManager:
         self.step_index = 0
         self.arrived = False
         self.last_message = None
+        self.last_key = None
         self.last_event_time = -float("inf")
         self.event_id += 1
         self.distance_remaining = route.get("distance")
@@ -108,6 +110,7 @@ class NavigationManager:
         self.off_route_count = 0
         self.arrived = False
         self.last_message = None
+        self.last_key = None
 
     def update(self, latitude: float, longitude: float, heading: float | None = None,
                accuracy: float | None = None,
@@ -126,7 +129,8 @@ class NavigationManager:
         direct_remaining = distance_meters(position, self.destination)
         deviation, remaining = self._route_metrics(position)
         self.distance_remaining = remaining
-        if direct_remaining <= self.arrival_meters:
+        if direct_remaining <= self.arrival_meters or self.arrived:
+            # Arrival is latched: GPS jitter must not turn "arrived" back into walking guidance.
             already_arrived = self.arrived
             self.arrived = True
             self.distance_remaining = direct_remaining
@@ -184,29 +188,40 @@ class NavigationManager:
                                step_index=self.step_index)
 
         self.aligned_to_route = True
-        distance = float(step.get("distance", remaining))
         if maneuver.get("type") == "depart":
             prefix = "You are facing the mapped road. Once safely on it, "
         else:
             prefix = "Aligned. "
-        if self.step_index + 1 < len(self.steps):
-            next_maneuver = self.steps[self.step_index + 1].get("maneuver", {})
-            if next_maneuver.get("type") == "arrive":
-                message = f"{prefix}walk straight for {_format_distance(distance)} to the destination."
-            else:
-                next_instruction = self._instruction(next_maneuver).lower()
-                message = (f"{prefix}walk straight for {_format_distance(distance)}, "
-                           f"then {next_instruction}.")
+        next_maneuver = (self.steps[self.step_index + 1].get("maneuver", {})
+                         if self.step_index + 1 < len(self.steps) else {})
+        if not next_maneuver or next_maneuver.get("type") == "arrive":
+            message = f"{prefix}walk straight for {_format_distance(remaining)} to the destination."
+            phase = "destination"
         else:
-            message = f"{prefix}walk straight for {_format_distance(distance)} to the destination."
-        return self._event(message, remaining, step_index=self.step_index)
+            # Distance left to the next turn, not the whole step length: the number must
+            # count down while the user walks, or the voice sounds stuck on one command.
+            next_point = next_maneuver.get("location", [])
+            if len(next_point) >= 2:
+                distance = distance_meters(position, (next_point[1], next_point[0]))
+            else:
+                distance = float(step.get("distance", remaining))
+            next_instruction = self._instruction(next_maneuver).lower()
+            message = (f"{prefix}walk straight for {_format_distance(distance)}, "
+                       f"then {next_instruction}.")
+            phase = next_instruction
+        # A shrinking distance alone is not a new instruction: it is only re-spoken on the timer.
+        return self._event(message, remaining, key=f"walk:{self.step_index}:{prefix}:{phase}",
+                           step_index=self.step_index)
 
-    def _event(self, message: str, remaining: float, **kwargs: Any) -> NavigationUpdate:
+    def _event(self, message: str, remaining: float, key: str | None = None,
+               **kwargs: Any) -> NavigationUpdate:
         now = time.monotonic()
-        changed = message != self.last_message
+        key = key or message
+        changed = key != self.last_key
         repeat = now - self.last_event_time >= self.repeat_after
         if changed or repeat:
             self.last_message = message
+            self.last_key = key
             self.last_event_time = now
             self.event_id += 1
         step_index = kwargs.pop("step_index", self.step_index)

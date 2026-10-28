@@ -159,3 +159,42 @@ def test_arrival_is_announced_once_and_not_repeated():
     assert second.message is None
     assert second.arrived is True
     assert second.event_id == first.event_id
+
+
+def test_arrival_stays_latched_when_gps_jitters_outside_the_arrival_radius():
+    manager = NavigationManager(repeat_after=0.0)
+    manager.set_route(make_route(), (0.0, 0.002))
+    manager.update(0.0, 0.002)
+
+    jitter = manager.update(0.0, 0.0018)  # ~22 m from the destination, then ~40 m
+
+    assert jitter.arrived is True
+    assert jitter.message is None
+
+
+def fresh_heading():
+    return time.time() * 1000
+
+
+def test_walk_instruction_counts_down_the_distance_to_the_next_turn():
+    manager = NavigationManager(repeat_after=0.0)
+    manager.set_route(make_departure_route(), (13.028, 77.498))
+
+    at_start = manager.update(13.027282, 77.497048, heading=9, heading_timestamp=fresh_heading())
+    later = manager.update(13.027750, 77.497110, heading=9, heading_timestamp=fresh_heading())
+
+    assert at_start.message.endswith("walk straight for 75 meters, then turn right.")
+    assert later.message.endswith("walk straight for 25 meters, then turn right.")
+    assert later.step_index == 0
+
+
+def test_shrinking_distance_alone_is_not_re_spoken_before_the_repeat_timer():
+    manager = NavigationManager(repeat_after=60.0)
+    manager.set_route(make_departure_route(), (13.028, 77.498))
+
+    first = manager.update(13.027282, 77.497048, heading=9, heading_timestamp=fresh_heading())
+    second = manager.update(13.027500, 77.497080, heading=9, heading_timestamp=fresh_heading())
+
+    assert first.message is not None
+    assert second.message is None
+    assert second.event_id == first.event_id
