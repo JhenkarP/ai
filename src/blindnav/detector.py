@@ -56,6 +56,9 @@ class Detector:
             self.model.set_classes(WORLD_CLASSES)
         self.conf = conf
         self.class_conf = class_conf or {}  # per-class thresholds overriding `conf`
+        # YOLO drops boxes below its own threshold before we see them, so it must be the
+        # lowest of all thresholds; the per-class filter in detect() then does the real work.
+        self.model_conf = min([conf, *self.class_conf.values()])
         # Each model has its own tracker, and both number their tracks 1, 2, 3...
         # An offset keeps the ids of two models from colliding.
         self.id_offset = id_offset
@@ -66,16 +69,20 @@ class Detector:
             i for i, name in self.model.names.items() if name in NAVIGATION_CLASSES
         ]
 
+    def reset_tracking(self) -> None:
+        """Forget all tracks (a new video starts): the next call builds a fresh tracker."""
+        self.model.predictor = None
+
     def detect(self, frame: np.ndarray, track: bool = True) -> list[Detection]:
         # predict() resizes the frame to 640px, runs the network, then applies
         # confidence filtering + NMS (removes duplicate boxes on the same object).
         # track() does the same, then links each box to the boxes of previous frames
         # (ByteTrack) and gives it an id. persist=True keeps the tracker memory between calls.
         if track:
-            result = self.model.track(frame, conf=self.conf, classes=self.class_ids,
+            result = self.model.track(frame, conf=self.model_conf, classes=self.class_ids,
                                       quantize=self.precision, tracker="bytetrack.yaml", persist=True, verbose=False)[0]
         else:
-            result = self.model.predict(frame, conf=self.conf, classes=self.class_ids,
+            result = self.model.predict(frame, conf=self.model_conf, classes=self.class_ids,
                                         quantize=self.precision, verbose=False)[0]
 
         boxes = result.boxes
