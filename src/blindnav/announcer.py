@@ -38,6 +38,7 @@ MIN_PERSISTENCE = 0.2     # s an alert must exist before being spoken (kills 1-f
 MIN_GAP = 0.1             # s between two messages, so priority changes are announced quickly
 REPEAT_AFTER = 5.0        # s before repeating an alert about the same thing...
 REPEAT_IF_CLOSER = 1.0    # ...and only if it got at least this much closer
+FORGET_AFTER = 3.0        # s an alert must be gone before it counts as a new event when it returns
 
 
 @dataclass
@@ -75,12 +76,14 @@ def urgency(distance: float, ttc: float | None, in_path: bool, weight: float,
 def rank_alerts(detections: list[Detection], path: PathStatus | None) -> list[Alert]:
     """Turn raw perception into a list of alerts, most urgent first."""
     alerts = []
+    detection_alerts: dict[int, Alert] = {}
     for det in detections:
         if det.class_name in {"door_open", "door_closed"} and (
             det.distance is None or det.distance >= 3.0 or not det.in_path):
             continue
-        if det.distance is None or (det.distance > MAX_DISTANCE and not det.in_path):
-            continue  # no track id = not confirmed over several frames yet
+        if det.distance is None or not math.isfinite(det.distance) or (
+                det.distance > MAX_DISTANCE and not det.in_path):
+            continue  # no usable distance, or too far to trust
         label = det.class_name
         if det.class_name == "stairs" and det.direction in {"up", "down"}:
             label = f"stairs_{det.direction}"
@@ -93,19 +96,20 @@ def rank_alerts(detections: list[Detection], path: PathStatus | None) -> list[Al
         weight = CLASS_WEIGHT.get(label, DEFAULT_WEIGHT)
         proximity_range = HAZARD_PROXIMITY_RANGE if det.class_name in HAZARD_CLASSES else PROXIMITY_RANGE
         u = urgency(det.distance, det.ttc, det.in_path, weight, proximity_range)
-        alerts.append(Alert(alert_key, label, det.distance, det.clock or 12, u,
-                    level=0, approaching=det.ttc is not None,
-                    path_priority=det.in_path))
+        alert = Alert(alert_key, label, det.distance, det.clock or 12, u,
+                      level=0, approaching=det.ttc is not None,
+                      path_priority=det.in_path)
+        alerts.append(alert)
+        detection_alerts[id(det)] = alert
 
     if path is not None and path.blocked:
         # If YOLO already knows what blocks the path, its name is more useful than "obstacle".
+        # That only holds when the named object really produced an alert of its own.
         named = path_hazard(detections, path)
-        if named is not None:
-            for alert in alerts:
-                if alert.key == named.track_id:
-                    alert.guidance = path.guidance
-                    break
-        if named is None or path.head_level:
+        named_alert = detection_alerts.get(id(named)) if named is not None else None
+        if named_alert is not None:
+            named_alert.guidance = path.guidance
+        if named_alert is None or path.head_level:
             weight = HEAD_LEVEL_WEIGHT if path.head_level else OBSTACLE_WEIGHT
             u = urgency(path.distance, path.ttc, True, weight)
             alerts.append(Alert("path", "obstacle", path.distance, path.clock or 12, u, level=0,
@@ -139,6 +143,7 @@ class Announcer:
     def __init__(self):
         self.first_seen: dict = {}  # key -> time the alert first appeared (persistence check)
         self.spoken: dict = {}      # key -> (time, level, distance) of the last message about it
+        self.last_present: dict = {}  # key -> last time the alert was still active
         self.last_message_time = -math.inf
 
     def decide(self, t: float, alerts: list[Alert]) -> Alert | None:
@@ -147,6 +152,13 @@ class Announcer:
         self.first_seen = {k: v for k, v in self.first_seen.items() if k in present}
         for a in alerts:
             self.first_seen.setdefault(a.key, t)
+            self.last_present[a.key] = t
+        # Something that disappeared for a while and comes back is a new event: without this,
+        # keys like "path" would stay muted forever after the first announcement.
+        for key in [k for k, seen in self.last_present.items()
+                    if k not in present and t - seen > FORGET_AFTER]:
+            del self.last_present[key]
+            self.spoken.pop(key, None)
 
         for a in alerts:  # already sorted: most urgent first
             if self._should_say(t, a):
