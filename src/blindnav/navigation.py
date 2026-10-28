@@ -68,7 +68,9 @@ class NavigationManager:
         self.last_position: tuple[float, float] | None = None
         self.distance_remaining: float | None = None
         self.heading: float | None = None
+        self.target_bearing: float | None = None
         self.aligned_to_route = False
+        self.off_route_count = 0
         self.arrived = False
 
     def set_route(self, route: dict[str, Any], destination: tuple[float, float]) -> NavigationUpdate:
@@ -87,7 +89,9 @@ class NavigationManager:
         self.event_id += 1
         self.distance_remaining = route.get("distance")
         self.heading = None
+        self.target_bearing = None
         self.aligned_to_route = False
+        self.off_route_count = 0
         return NavigationUpdate(active=True, event_id=self.event_id, step_index=0,
                                 distance_remaining=route.get("distance"))
 
@@ -99,57 +103,97 @@ class NavigationManager:
         self.step_index = 0
         self.distance_remaining = None
         self.heading = None
+        self.target_bearing = None
         self.aligned_to_route = False
+        self.off_route_count = 0
         self.arrived = False
         self.last_message = None
 
-    def update(self, latitude: float, longitude: float, heading: float | None = None) -> NavigationUpdate:
+    def update(self, latitude: float, longitude: float, heading: float | None = None,
+               accuracy: float | None = None,
+               heading_timestamp: float | None = None) -> NavigationUpdate:
         position = (latitude, longitude)
         self.last_position = position
-        if heading is not None and 0 <= heading < 360:
+        heading_is_fresh = (heading_timestamp is not None and
+                            0 <= time.time() * 1000 - heading_timestamp <= 5000)
+        if heading is not None and 0 <= heading < 360 and heading_is_fresh:
             self.heading = heading
+        else:
+            self.heading = None
         if self.route is None or self.destination is None:
             return NavigationUpdate()
 
-        remaining = distance_meters(position, self.destination)
+        direct_remaining = distance_meters(position, self.destination)
+        deviation, remaining = self._route_metrics(position)
         self.distance_remaining = remaining
-        if remaining <= self.arrival_meters:
+        if direct_remaining <= self.arrival_meters:
             self.arrived = True
-            return self._event("You have arrived at your destination.", remaining, arrived=True)
+            self.distance_remaining = direct_remaining
+            return self._event("You have arrived at your destination.", direct_remaining, arrived=True)
 
-        deviation = self._distance_to_geometry(position)
-        if deviation > self.deviation_meters:
-            return self._event("You are off route. Please stop while the route is recalculated.", remaining,
+        accuracy_tolerance = min(100.0, max(0.0, accuracy * 1.5)) if accuracy is not None else 0.0
+        deviation_tolerance = max(self.deviation_meters, accuracy_tolerance)
+        if deviation > deviation_tolerance:
+            self.off_route_count += 1
+            if self.off_route_count < 2:
+                return NavigationUpdate(active=True, distance_remaining=remaining,
+                                        step_index=self.step_index)
+            return self._event("You are off the planned route. Stop and request a new route.", remaining,
                                off_route=True)
-
-        route_point = self._next_route_point(position)
-        if self.heading is not None and route_point is not None:
-            delta = _heading_delta(self.heading, _bearing_degrees(position, route_point))
-            if abs(delta) > 30:
-                self.aligned_to_route = False
-                direction = "right" if delta > 0 else "left"
-                return self._event(f"Turn {direction} to face the road, then walk straight.", remaining)
-            self.aligned_to_route = True
+        self.off_route_count = 0
 
         while self.step_index < len(self.steps) - 1:
             maneuver = self.steps[self.step_index].get("maneuver", {})
-            point = maneuver.get("location", [])
-            if len(point) < 2:
+            next_maneuver = self.steps[self.step_index + 1].get("maneuver", {})
+            if next_maneuver.get("type") == "arrive":
                 break
-            maneuver_position = (point[1], point[0])
-            if distance_meters(position, maneuver_position) <= 12:
-                self.step_index += 1
-            else:
+            if not self._maneuver_reached(position, maneuver, next_maneuver, accuracy):
                 break
+            self.step_index += 1
 
         if not self.steps:
             return NavigationUpdate(active=True, distance_remaining=remaining, step_index=0)
 
         step = self.steps[min(self.step_index, len(self.steps) - 1)]
         maneuver = step.get("maneuver", {})
-        instruction = self._instruction(maneuver)
+        target_bearing = maneuver.get("bearing_after")
+        if target_bearing is None:
+            route_point = self._next_route_point(position)
+            target_bearing = _bearing_degrees(position, route_point) if route_point else None
+        self.target_bearing = float(target_bearing) % 360 if target_bearing is not None else None
+
+        if self.heading is None or self.target_bearing is None:
+            self.aligned_to_route = False
+            return self._event("Camera direction unavailable. Stop until the camera direction can be checked.",
+                               remaining, step_index=self.step_index)
+
+        delta = _heading_delta(self.heading, self.target_bearing)
+        if abs(delta) > 30:
+            self.aligned_to_route = False
+            if abs(delta) >= 150:
+                return self._event("Turn around to face the road. Stop when aligned.", remaining,
+                                   step_index=self.step_index)
+            direction = "right" if delta > 0 else "left"
+            target = "the road" if maneuver.get("type") == "depart" else "the next road"
+            return self._event(f"Turn {direction} to face {target}. Stop when aligned.", remaining,
+                               step_index=self.step_index)
+
+        self.aligned_to_route = True
         distance = float(step.get("distance", remaining))
-        message = f"{instruction} in {_format_distance(distance)}."
+        if maneuver.get("type") == "depart":
+            prefix = "You are facing the mapped road. Once safely on it, "
+        else:
+            prefix = "Aligned. "
+        if self.step_index + 1 < len(self.steps):
+            next_maneuver = self.steps[self.step_index + 1].get("maneuver", {})
+            if next_maneuver.get("type") == "arrive":
+                message = f"{prefix}walk straight for {_format_distance(distance)} to the destination."
+            else:
+                next_instruction = self._instruction(next_maneuver).lower()
+                message = (f"{prefix}walk straight for {_format_distance(distance)}, "
+                           f"then {next_instruction}.")
+        else:
+            message = f"{prefix}walk straight for {_format_distance(distance)} to the destination."
         return self._event(message, remaining, step_index=self.step_index)
 
     def _event(self, message: str, remaining: float, **kwargs: Any) -> NavigationUpdate:
@@ -166,9 +210,76 @@ class NavigationManager:
                                 step_index=step_index, **kwargs)
 
     def _distance_to_geometry(self, position: tuple[float, float]) -> float:
-        if not self.geometry:
-            return 0.0
-        return min(distance_meters(position, point) for point in self.geometry)
+        return self._route_metrics(position)[0]
+
+    @staticmethod
+    def _maneuver_reached(position: tuple[float, float], start: dict[str, Any],
+                          target: dict[str, Any], accuracy: float | None) -> bool:
+        target_point = target.get("location", [])
+        start_point = start.get("location", [])
+        if len(target_point) < 2:
+            return False
+        target_position = (target_point[1], target_point[0])
+        radius = max(12.0, min(25.0, accuracy * 1.5)) if accuracy is not None else 12.0
+        if distance_meters(position, target_position) <= radius:
+            return True
+        if len(start_point) < 2:
+            return False
+
+        start_latitude, start_longitude = start_point[1], start_point[0]
+        latitude_scale = 111_320.0
+        longitude_scale = latitude_scale * math.cos(math.radians(start_latitude))
+        route_x = (target_position[1] - start_longitude) * longitude_scale
+        route_y = (target_position[0] - start_latitude) * latitude_scale
+        route_length = math.hypot(route_x, route_y)
+        if route_length < 1.0:
+            return False
+
+        position_x = (position[1] - start_longitude) * longitude_scale
+        position_y = (position[0] - start_latitude) * latitude_scale
+        along_route = (position_x * route_x + position_y * route_y) / route_length
+        cross_track = abs(route_x * position_y - route_y * position_x) / route_length
+        corridor = max(15.0, min(30.0, accuracy * 1.5)) if accuracy is not None else 15.0
+        return along_route >= route_length and cross_track <= corridor
+
+    def _route_metrics(self, position: tuple[float, float]) -> tuple[float, float]:
+        if len(self.geometry) < 2:
+            if self.geometry:
+                distance = distance_meters(position, self.geometry[0])
+                if self.destination is not None:
+                    return distance, distance + distance_meters(self.geometry[0], self.destination)
+                return distance, distance
+            direct = distance_meters(position, self.destination) if self.destination else 0.0
+            return 0.0, direct
+
+        latitude_scale = 111_320.0
+        longitude_scale = latitude_scale * math.cos(math.radians(position[0]))
+        best_deviation = float("inf")
+        best_remaining = distance_meters(position, self.destination) if self.destination else 0.0
+        for index, (first, second) in enumerate(zip(self.geometry, self.geometry[1:])):
+            first_x = (first[1] - position[1]) * longitude_scale
+            first_y = (first[0] - position[0]) * latitude_scale
+            second_x = (second[1] - position[1]) * longitude_scale
+            second_y = (second[0] - position[0]) * latitude_scale
+            segment_x = second_x - first_x
+            segment_y = second_y - first_y
+            segment_squared = segment_x * segment_x + segment_y * segment_y
+            fraction = 0.0 if segment_squared == 0 else max(
+                0.0, min(1.0, -(first_x * segment_x + first_y * segment_y) / segment_squared)
+            )
+            projected_x = first_x + fraction * segment_x
+            projected_y = first_y + fraction * segment_y
+            deviation = math.hypot(projected_x, projected_y)
+            if deviation >= best_deviation:
+                continue
+
+            segment_length = distance_meters(first, second)
+            remaining = segment_length * (1 - fraction)
+            remaining += sum(distance_meters(start, end)
+                             for start, end in zip(self.geometry[index + 1:], self.geometry[index + 2:]))
+            best_deviation = deviation
+            best_remaining = remaining
+        return best_deviation, best_remaining
 
     def _next_route_point(self, position: tuple[float, float]) -> tuple[float, float] | None:
         if not self.geometry:
@@ -194,14 +305,23 @@ class NavigationManager:
         return "Continue straight"
 
     def snapshot(self) -> dict[str, Any]:
+        map_geometry = self.geometry
+        max_map_points = 120
+        if len(map_geometry) > max_map_points:
+            stride = math.ceil((len(map_geometry) - 1) / (max_map_points - 1))
+            map_geometry = map_geometry[::stride]
+            if map_geometry[-1] != self.geometry[-1]:
+                map_geometry.append(self.geometry[-1])
         return {
             "active": self.route is not None,
             "arrived": self.arrived,
             "step_index": self.step_index,
             "event_id": self.event_id,
             "destination": self.destination,
+            "route_geometry": map_geometry,
             "distance_remaining": self.distance_remaining,
             "heading": self.heading,
+            "target_bearing": self.target_bearing,
             "aligned_to_route": self.aligned_to_route,
             "guidance": self.last_message,
         }

@@ -9,7 +9,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
 OUT = Path(__file__).with_name("SafeStride_Synopsis.docx")
-FONT = "Times New Roman"
+FONT = "Book Antiqua"
 
 
 def set_cell_shading(cell, fill="D9EAD3"):
@@ -19,6 +19,30 @@ def set_cell_shading(cell, fill="D9EAD3"):
         shading = OxmlElement("w:shd")
         properties.append(shading)
     shading.set(qn("w:fill"), fill)
+
+
+def remove_cell_shading(cell):
+    properties = cell._tc.get_or_add_tcPr()
+    shading = properties.find(qn("w:shd"))
+    if shading is not None:
+        properties.remove(shading)
+
+
+def set_table_borders(table):
+    properties = table._tbl.tblPr
+    borders = properties.first_child_found_in("w:tblBorders")
+    if borders is None:
+        borders = OxmlElement("w:tblBorders")
+        properties.append(borders)
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        element = borders.find(qn("w:" + edge))
+        if element is None:
+            element = OxmlElement("w:" + edge)
+            borders.append(element)
+        element.set(qn("w:val"), "single")
+        element.set(qn("w:sz"), "4")
+        element.set(qn("w:space"), "0")
+        element.set(qn("w:color"), "auto")
 
 
 def set_cell_text(cell, value, bold=False, align=WD_ALIGN_PARAGRAPH.LEFT, size=10):
@@ -43,7 +67,7 @@ def set_run_font(run, size=11, bold=False, italic=False):
     run.italic = italic
 
 
-def add_paragraph(doc, value, align=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line=True, space_after=3):
+def add_paragraph(doc, value, align=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line=True, space_after=0):
     paragraph = doc.add_paragraph()
     paragraph.alignment = align
     paragraph.paragraph_format.line_spacing = 1.0
@@ -58,8 +82,8 @@ def add_paragraph(doc, value, align=WD_ALIGN_PARAGRAPH.JUSTIFY, first_line=True,
 def add_heading(doc, value):
     paragraph = doc.add_paragraph()
     paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    paragraph.paragraph_format.space_before = Pt(6)
-    paragraph.paragraph_format.space_after = Pt(3)
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0)
     paragraph.paragraph_format.keep_with_next = True
     run = paragraph.add_run(value)
     set_run_font(run, size=11, bold=True)
@@ -72,7 +96,7 @@ def add_bullet(doc, value, number=None):
     paragraph.paragraph_format.left_indent = Inches(0.35)
     paragraph.paragraph_format.first_line_indent = Inches(-0.2)
     paragraph.paragraph_format.line_spacing = 1.0
-    paragraph.paragraph_format.space_after = Pt(2)
+    paragraph.paragraph_format.space_after = Pt(0)
     prefix = f"{number}. " if number is not None else "- "
     run = paragraph.add_run(prefix + value)
     set_run_font(run)
@@ -85,7 +109,7 @@ def add_reference(doc, number, value):
     paragraph.paragraph_format.left_indent = Inches(0.25)
     paragraph.paragraph_format.first_line_indent = Inches(-0.25)
     paragraph.paragraph_format.line_spacing = 1.0
-    paragraph.paragraph_format.space_after = Pt(3)
+    paragraph.paragraph_format.space_after = Pt(0)
     run = paragraph.add_run(f"{number}. {value}")
     set_run_font(run, size=10)
     return paragraph
@@ -111,9 +135,10 @@ def add_requirements_table(doc, headers, rows, widths):
     table = doc.add_table(rows=1, cols=len(headers))
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.style = "Table Grid"
+    set_table_borders(table)
     for index, header in enumerate(headers):
         set_cell_text(table.rows[0].cells[index], header, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
-        set_cell_shading(table.rows[0].cells[index])
+        remove_cell_shading(table.rows[0].cells[index])
     for row in rows:
         cells = table.add_row().cells
         for index, value in enumerate(row):
@@ -128,17 +153,17 @@ def add_requirements_table(doc, headers, rows, widths):
 def build_document():
     doc = Document()
     section = doc.sections[0]
-    section.top_margin = Inches(0.7)
-    section.bottom_margin = Inches(0.7)
-    section.left_margin = Inches(0.8)
-    section.right_margin = Inches(0.8)
+    section.top_margin = Inches(0.2638888889)
+    section.bottom_margin = Inches(0.1944444444)
+    section.left_margin = Inches(0.25)
+    section.right_margin = Inches(0.25)
 
     normal = doc.styles["Normal"]
     normal.font.name = FONT
     normal._element.rPr.rFonts.set(qn("w:eastAsia"), FONT)
     normal.font.size = Pt(11)
     normal.paragraph_format.line_spacing = 1.0
-    normal.paragraph_format.space_after = Pt(3)
+    normal.paragraph_format.space_after = Pt(0)
 
     footer = section.footer.paragraphs[0]
     add_page_number(footer)
@@ -151,35 +176,35 @@ def build_document():
     ]:
         paragraph = doc.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        paragraph.paragraph_format.space_after = Pt(1)
+        paragraph.paragraph_format.space_after = Pt(0)
         run = paragraph.add_run(value)
         set_run_font(run, size=size, bold=bold)
 
     metadata = doc.add_table(rows=2, cols=4)
     metadata.alignment = WD_TABLE_ALIGNMENT.CENTER
     metadata.style = "Table Grid"
+    set_table_borders(metadata)
     values = [
-        ("Batch No:", "B15", "Date:", "24/10/2026"),
+        ("Batch No:", "B15", "Date:", "16/07/2026"),
         ("USN", "1", "Name", "Jhenkar P"),
     ]
     for row_index, row_values in enumerate(values):
         for col_index, value in enumerate(row_values):
             set_cell_text(metadata.rows[row_index].cells[col_index], value, bold=col_index % 2 == 0, size=10)
-            if col_index % 2 == 0:
-                set_cell_shading(metadata.rows[row_index].cells[col_index], "EAF2F8")
+            remove_cell_shading(metadata.rows[row_index].cells[col_index])
     metadata.add_row()
     last = metadata.rows[-1].cells
     set_cell_text(last[0], "Email-ID", bold=True, size=10)
     set_cell_text(last[1], "2023cs_JHENKARP_b@nie.ac.in", size=10)
     set_cell_text(last[2], "Mobile Number", bold=True, size=10)
     set_cell_text(last[3], "6363108117", size=10)
-    doc.add_paragraph().paragraph_format.space_after = Pt(1)
+    doc.add_paragraph().paragraph_format.space_after = Pt(0)
 
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title.paragraph_format.space_before = Pt(3)
-    title.paragraph_format.space_after = Pt(8)
-    run = title.add_run("Project Title: SafeStride Assist - An AI-Based Safe Walking Assistant Using Real-Time Obstacle Detection and Monocular Depth Estimation")
+    title.paragraph_format.space_before = Pt(0)
+    title.paragraph_format.space_after = Pt(0)
+    run = title.add_run("Project Title: SafeStride Assist - An AI-Based Safe Walking Assistant Using Monocular Depth Estimation")
     set_run_font(run, size=11, bold=True)
 
     add_heading(doc, "Abstract:")
@@ -203,20 +228,30 @@ def build_document():
     add_paragraph(doc, "Ranftl et al. [4] demonstrated the usefulness of monocular depth models for dense scene understanding. Their work highlights that relative depth captures scene structure but does not automatically provide a guaranteed real-world distance. This motivates the ground-plane scale correction and explicit safety limitations used in the proposed prototype.")
     add_paragraph(doc, "World Health Organization [5] reports the importance of accessible support for people with vision impairment. Assistive systems should therefore communicate only relevant information, use understandable feedback, and avoid presenting experimental computer vision as a replacement for established mobility aids. These principles guide SafeStride Assist's prioritised alerting and prototype safety boundary.")
     add_paragraph(doc, "Research on assistive computer vision also shows that perception quality and interaction design must be evaluated together. A detector may achieve good image-level accuracy but still be unsuitable if it speaks too frequently, gives an incorrect side instruction, or reports a distant object that does not affect the walking path. SafeStride Assist therefore treats distance, path relevance, and alert timing as first-class parts of the system rather than as optional display features.")
+    add_paragraph(doc, "Khan et al. [7] systematically reviewed navigation assistants for blind and visually impaired people and identified continuing gaps in independent, reliable, and context-aware navigation. This supports SafeStride Assist's combination of perception, route guidance, and safety feedback rather than treating obstacle detection as an isolated task.")
+    add_paragraph(doc, "Xu et al. [8] reviewed wearable electronic travel aids for obstacle avoidance. Their findings support combining camera-based perception with distance estimation and multimodal feedback, while also reinforcing that such systems should complement conventional mobility aids.")
+    add_paragraph(doc, "Katzschmann et al. [9] demonstrated local navigation using time-of-flight sensing and haptic feedback. This provides direct support for distance-aware local hazard warnings and for offering feedback channels that do not depend only on speech.")
+    add_paragraph(doc, "Eltaher et al. [10] reviewed urban navigation systems for visually impaired people, including route guidance and location-aware assistance. Their work supports SafeStride Assist's destination search, route instructions, heading alignment, off-route detection, and arrival state.")
+    add_paragraph(doc, "Johannesson et al. [11] presented the Sound of Vision project, which explored converting visual scene information into auditory representations. This supports the use of concise directional voice feedback and spatial audio as a non-visual interface, while SafeStride Assist keeps its output intentionally shorter and action-oriented.")
+    add_paragraph(doc, "Shull and Damian [12] reviewed haptic wearables as sensory replacement and sensory augmentation. Their analysis supports the future addition of haptic cues and the use of multimodal feedback when speech alone may be insufficient or distracting.")
+    add_paragraph(doc, "Ranganeni et al. [13] studied different levels of control in a navigation assistant for blind travelers. Their results indicate that user preferences vary by situation, supporting SafeStride Assist's role as an assistive layer that provides guidance while preserving user agency rather than claiming full autonomous control.")
+    add_paragraph(doc, "Zhang et al. [14] proposed an ARCore-based user-centric assistive navigation system for visually impaired people. This supports the feasibility of combining smartphone cameras, computer vision, positioning, and user-directed guidance in a portable application context.")
     add_paragraph(doc, "The literature further indicates that monocular depth should be treated as an estimate with scene-dependent uncertainty. Camera height, pitch, ground visibility, lighting, motion blur, and reflective surfaces affect the result. The proposed system addresses this by fitting a ground plane from lower-image points, smoothing scale estimates over recent frames, using a bounded forward corridor, and communicating the prototype's limitations instead of presenting distance as a guaranteed measurement.")
 
     add_heading(doc, "Existing System & its Drawback:")
-    add_paragraph(doc, "Existing camera-based assistance demonstrations commonly use object detection to draw labels and bounding boxes over a live image. Some systems add monocular depth or tracking, but these components are often presented independently rather than combined into a single walking-path decision. Generic detectors also cannot identify every real-world hazard, and a detector label alone does not indicate whether an obstacle blocks the user's path or how urgently it should be announced.")
+    add_paragraph(doc, "Existing assistive systems include traditional mobility aids, low-cost electronic travel aids, GPS navigation applications, remote-assistance services, and camera-based computer-vision demonstrations. These systems provide valuable support, but they generally address only one part of the walking problem. A basic ultrasonic or Raspberry Pi prototype may report that an object is nearby, a GPS application may provide route instructions without describing local obstacles, and a camera detector may draw a label without deciding whether the object blocks the user's path. This creates a need for a system that combines perception, distance estimation, temporal reasoning, path analysis, and prioritised feedback.")
     add_heading(doc, "Drawbacks of Existing Systems:")
     drawbacks = [
-        "Limited Reach of Manual Aids: Dakopoulos and Bourbakis [7] explain that electronic travel aids are intended to complement, rather than replace, traditional mobility aids. A white cane or guide dog remains essential, but manual aids may provide limited information about distant, overhead, or unfamiliar obstacles.",
-        "Limited Distance Awareness: Tapu et al. [8] observe that many assistive systems detect obstacles without providing reliable distance information. A visual label or bounding box alone does not indicate how urgently the user must respond.",
-        "No Walking-Corridor Reasoning: Existing detection systems commonly identify objects in the camera view without deciding whether they lie within the user's forward walking corridor. This can produce warnings for objects that are visible but not directly relevant to the user's path.",
-        "Unknown Blockers May Be Missed: As discussed by Bhowmick and Hazarika [9], assistive vision systems depend strongly on their sensing and recognition models. Temporary structures, low-contrast hazards, and objects without trained classes may therefore remain undetected.",
-        "Insufficient Stair and Step Awareness: General obstacle detectors may not reliably distinguish stairs, curbs, and changes in ground level from ordinary scene structure. This limits their ability to provide the specific directional warning required for safe step and stair negotiation.",
-        "Repeated and Low-Value Alerts: Frequent announcements can increase cognitive load and make urgent information harder to notice. A system must therefore consider persistence, distance, path relevance, and alert priority rather than speaking for every detection.",
+        "Limited Reach of Manual Aids: Khan et al. [7] explain that electronic travel aids should complement, rather than replace, a white cane, guide dog, or human assistance. Manual aids remain essential but may provide limited information about distant, overhead, moving, or unfamiliar obstacles.",
+        "Simple Fixed-Range Warnings: Low-cost ultrasonic, Arduino, or Raspberry Pi systems often report only that an object is within a predefined range. They may not identify the obstacle, estimate its direction, determine whether it blocks the path, or recommend an appropriate action.",
+        "Limited Processing on Low-Cost Hardware: Camera-based prototypes running on embedded computers may experience reduced frame rates or delayed alerts when object detection, tracking, and depth estimation are performed together. This can reduce usefulness in rapidly changing scenes.",
+        "GPS Does Not Describe Nearby Hazards: GPS navigation applications can provide route and destination guidance, but they generally cannot identify a sudden obstacle, blocked corridor, indoor hazard, or object entering the user's immediate path.",
+        "No Walking-Corridor Reasoning: Many camera demonstrations detect objects in the image without deciding whether they lie within the user's forward walking corridor. This can produce warnings for objects that are visible but not directly relevant to the user's path.",
+        "Unknown Blockers May Be Missed: Assistive vision systems depend on their sensing and recognition models. Temporary structures, low-contrast hazards, transparent objects, and objects without trained classes may therefore remain undetected.",
+        "Limited Ground-Change Awareness: General obstacle detectors may not reliably distinguish every curb, step, or change in ground level from ordinary scene structure. This remains a secondary extension area for SafeStride Assist rather than the main focus of the current prototype.",
+        "Repeated and Low-Value Alerts: Frequent announcements can increase cognitive load and make urgent information harder to notice. A system must consider persistence, distance, path relevance, and alert priority rather than speaking for every detection.",
         "Weak Temporal Reasoning: Frame-by-frame analysis does not establish whether an obstacle is approaching, stationary, or moving across the walking path. Tracking methods such as ByteTrack [2] are needed to provide more stable temporal evidence.",
-        "Additional Hardware and Connectivity Requirements: Some assistive solutions require dedicated sensors, wearable components, or network services, which can increase cost, maintenance, and dependence on operating conditions.",
+        "Dependence on Connectivity or Remote Assistance: Remote-assistance services can provide useful human scene interpretation, but they depend on network availability, service response time, privacy conditions, and operator availability.",
         "Unclear Safety Boundaries: Ranftl et al. [4] show that monocular depth is useful for scene structure but does not automatically provide guaranteed real-world distance. Experimental systems must communicate uncertainty and must not be treated as replacements for certified mobility support."
     ]
     for item in drawbacks:
@@ -229,7 +264,7 @@ def build_document():
         body_run = paragraph.add_run(explanation)
         set_run_font(body_run, size=11)
 
-    add_heading(doc, "Proposed System:")
+    add_heading(doc, "Proposed Methodology:")
     add_paragraph(doc, "The proposed SafeStride Assist system is a local, AI-based safe-walking assistant that processes camera frames and generates concise voice guidance. It combines YOLO obstacle detection, ByteTrack temporal tracking, Depth Anything V2 monocular depth estimation, RANSAC ground-plane fitting, a three-dimensional walking-corridor model, approach-risk estimation, and prioritised speech feedback. The system can detect known obstacles and can also identify unknown blockers from depth points that rise above the estimated ground plane within the forward corridor.")
     add_paragraph(doc, "The distance algorithm begins by converting the depth map into three-dimensional points using a pinhole-camera model and an estimated focal length. A RANSAC procedure searches the lower image for a stable horizontal ground plane while rejecting points belonging to people, walls, vehicles, and other outliers. The known approximate camera height is then used to estimate a scale factor. Recent valid scale estimates are retained in a short history and combined using a median, reducing sudden distance changes caused by individual noisy frames.")
     add_paragraph(doc, "After scale correction, the spatial analyser tests each point against a one-metre-wide corridor extending from approximately 0.8 metres to three metres in front of the camera. Points that rise above the ground plane within the configured obstacle-height range are treated as possible blockers. If enough valid points are present, the nearest robust depth percentile is selected as the obstacle distance. The distribution of front-facing points is then used to estimate clock direction and whether a left or right side appears clearer.")
@@ -259,7 +294,7 @@ def build_document():
         "To generate concise voice alerts containing obstacle distance, direction, urgency, and guidance.",
         "To reduce false and repeated alerts using persistence checks, cooldowns, and priority ranking.",
         "To provide a browser console for monitoring the live feed, path status, and alert state.",
-        "To establish a foundation for future custom door-state and stair-direction models."
+        "To establish a foundation for future custom hazard and environmental-state models."
     ]
     for item in objectives:
         add_bullet(doc, item)
@@ -288,11 +323,12 @@ def build_document():
         ("OPERATING SYSTEM", "Windows 11 / Ubuntu 22.04 LTS"),
         ("PROGRAMMING LANGUAGE", "Python 3.10 or higher"),
         ("COMPUTER VISION LIBRARY", "OpenCV"),
-        ("OBSTACLE DETECTION MODEL", "YOLO11s using Ultralytics"),
-        ("DEPTH ESTIMATION MODEL", "Depth Anything V2"),
+        ("OBJECT DETECTION MODEL", "YOLO11s using Ultralytics"),
         ("OBJECT TRACKING", "ByteTrack"),
+        ("DEPTH ESTIMATION MODEL", "Depth Anything V2"),
         ("DEEP LEARNING FRAMEWORK", "PyTorch"),
-        ("WEB INTERFACE", "HTML, CSS, JavaScript, and browser speech synthesis")
+        ("WEB INTERFACE", "HTML, CSS, JavaScript, and browser speech synthesis"),
+        ("INPUT SUPPORT", "IP webcam, USB webcam, uploaded video, or recorded test clip")
     ], [2.5, 4.8])
 
     add_heading(doc, "Hardware Requirements:")
@@ -301,7 +337,7 @@ def build_document():
         ("GRAPHICS PROCESSING UNIT", "1", "NVIDIA GPU with CUDA support recommended"),
         ("RAM", "1", "8 GB minimum; 16 GB recommended"),
         ("STORAGE", "1", "256 GB SSD or higher"),
-        ("CAMERA", "1", "IP webcam, USB webcam, or recorded video source"),
+        ("CAMERA", "1", "IP webcam, USB webcam, or digital camera with video output"),
         ("AUDIO OUTPUT", "1", "Speaker or headphones for voice alerts")
     ], [2.5, 0.8, 4.0])
 
@@ -313,9 +349,14 @@ def build_document():
         "Ranftl, R., Bochkovskiy, A., and Koltun, V.: Vision Transformers for Dense Prediction. Proceedings of the IEEE International Conference on Computer Vision (ICCV), 2021.",
         "Ultralytics: Ultralytics YOLO Documentation. https://docs.ultralytics.com/.",
         "World Health Organization: World Report on Vision. World Health Organization, 2019. https://www.who.int/publications/i/item/9789241516570.",
-        "Dakopoulos, D., and Bourbakis, N. G.: Wearable Obstacle Avoidance Electronic Travel Aids for Blind: A Survey. IEEE Transactions on Systems, Man, and Cybernetics, Part C, 2010.",
-        "Tapu, R., Mocanu, B., and Zaharia, T.: Wearable Assistive Devices for Visually Impaired: A State of the Art Survey. Pattern Recognition Letters, 2013.",
-        "Bhowmick, A., and Hazarika, S. M.: An Insight into Assistive Technology for the Visually Impaired and Blind People: State-of-the-Art and Future Trends. Journal on Multimodal User Interfaces, 2017."
+        "Khan, S., Nazir, S., and Khan, H. U.: Analysis of Navigation Assistants for Blind and Visually Impaired People: A Systematic Review. IEEE Access, 9, 26712-26734, 2021. https://doi.org/10.1109/ACCESS.2021.3052415.",
+        "Xu, J., et al.: Wearable Obstacle Avoidance Electronic Travel Aids for Blind and Visually Impaired Individuals: A Systematic Review. IEEE Access, 2023. https://doi.org/10.1109/ACCESS.2023.3285396.",
+        "Katzschmann, R. K., Araki, B., and Rus, D.: Safe Local Navigation for Visually Impaired Users With a Time-of-Flight and Haptic Feedback Device. IEEE Transactions on Neural Systems and Rehabilitation Engineering, 26(3), 583-593, 2018. https://doi.org/10.1109/TNSRE.2018.2800665.",
+        "Eltaher, M., et al.: A Systematic Review of Urban Navigation Systems for Visually Impaired People. Sensors, 21(9), 3103, 2021. https://doi.org/10.3390/s21093103.",
+        "Johannesson, O. I., et al.: The Sound of Vision Project: The Concept and First Results. Brain Sciences, 6(3), 20, 2016. https://doi.org/10.3390/brainsci6030020.",
+        "Shull, P. B., and Damian, D. D.: Haptic Wearables as Sensory Replacement, Sensory Augmentation and Trainer: A Review. Journal of NeuroEngineering and Rehabilitation, 12, 59, 2015. https://doi.org/10.1186/s12984-015-0055-z.",
+        "Ranganeni, V., Sinclair, M., Ofek, E., Miller, A., Campbell, J., Kolobov, A., and Cutrell, E.: Exploring Levels of Control for a Navigation Assistant for Blind Travelers. Proceedings of the ACM/IEEE International Conference on Human-Robot Interaction, 4-12, 2023. https://doi.org/10.1145/3568162.3578630.",
+        "Zhang, C., et al.: An ARCore Based User Centric Assistive Navigation System for Visually Impaired People. Applied Sciences, 9(5), 989, 2019. https://doi.org/10.3390/app9050989."
     ]
     for index, reference in enumerate(references, start=1):
         add_reference(doc, index, reference)
@@ -324,6 +365,7 @@ def build_document():
     guide = doc.add_table(rows=3, cols=2)
     guide.alignment = WD_TABLE_ALIGNMENT.LEFT
     guide.style = "Table Grid"
+    set_table_borders(guide)
     for row, (label, value) in enumerate([
         ("Guide Name", "____________________________________________"),
         ("Designation", "____________________________________________"),
@@ -331,7 +373,7 @@ def build_document():
     ]):
         set_cell_text(guide.rows[row].cells[0], label, bold=True, size=10)
         set_cell_text(guide.rows[row].cells[1], value, size=10)
-        set_cell_shading(guide.rows[row].cells[0], "EAF2F8")
+        remove_cell_shading(guide.rows[row].cells[0])
 
     doc.save(OUT)
     print(OUT)
