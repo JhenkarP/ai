@@ -251,19 +251,53 @@ def build_content():
     add(("fig", "states", "paper_assets/fig_nav_states.png",
          "Fig. 3. State diagram of the route-guidance module."))
 
+    add(("h2", "E. Safety and privacy design"))
+    add(("p", "Camera frames are analysed on the user's own computer; the phone sends frames only to "
+              "that computer over the local network, and no cloud vision service is used. The server keeps "
+              "only the latest GPS position in memory and does not return it in its public status "
+              "endpoints. Two parts do leave the machine: place search and routing send the destination "
+              "text and the start and end coordinates to public OpenStreetMap-based services [16], and "
+              "uploaded videos are stored in a local folder without automatic deletion. The server has no "
+              "authentication, so it must run on a trusted network. Messages state approximate distances "
+              "and the interface carries a prototype notice; the system never claims that a path is safe, "
+              "only that no blocker was found."))
+
     add(("h1", "V.", "System Implementation"))
+    add(("p", "Table I lists the software and hardware environment in which all results were measured. "
+              "The browser console and the phone client both talk to the same Python engine."))
+    add(("table", "TABLE I. SOFTWARE AND HARDWARE ENVIRONMENT",
+         ["Component", "Specification"],
+         [["Operating system", "Windows 11 (server-side voice uses Windows SAPI)"],
+          ["Language / runtime", "Python 3.12 (3.10 or newer), PyTorch 2.5.1 with CUDA 12.4"],
+          ["Detection and tracking", "Ultralytics 8.4 YOLO11s, ByteTrack"],
+          ["Depth", "Depth Anything V2 Metric-Outdoor-Small (Transformers 4.49)"],
+          ["Image processing", "OpenCV 4.10, NumPy 1.26"],
+          ["Back-end", "Python HTTP server, MJPEG stream, JSON endpoints"],
+          ["Browser console", "HTML, CSS, JavaScript, browser speech synthesis"],
+          ["Phone client", "Expo SDK 58, React Native 0.88 (camera, GPS, compass, speech)"],
+          ["Hardware", "Laptop with " + gpu + "; phone with camera, GPS and compass"]],
+         [1.0, 2.35]))
     add(("h2", "A. Phase 1: perception"))
     add(("p", "YOLO11s runs at a 0.35 confidence threshold on walking-relevant COCO classes (people, "
               "vehicles, benches, chairs, hydrants and similar). A second YOLO11s model detects street "
-              "hazards. It was trained for 60 epochs (patience 15) from COCO weights on a South-Asian "
-              "street dataset [15] that was filtered to six classes (stairs, pole, pillar, bin, cone, "
-              "obstacle) with 1,935 hazard images plus 967 background images for training. Per-class "
-              "thresholds follow the test results: the vague “obstacle” class needs 0.5 confidence, and "
-              "“bin” is disabled because its recall was 0.026. ByteTrack gives each box a stable identity. "
-              "Depth Anything V2 Metric-Outdoor-Small runs in FP16 at a 392-pixel input and is refreshed "
-              "every second frame. The real-video runs in Section VII-D used a single-class stairs "
-              "variant of the hazard detector (validation mAP50 0.50), because the six-class weights "
-              "evaluated in Table II were not in the project's model folder."))
+              "hazards. It was trained from COCO weights on a South-Asian street dataset [15] that "
+              "contains 22 classes (rickshaws, CNG vehicles, footpaths and others). Only six hazard "
+              "classes that COCO does not know were kept (Table II); the tree class was dropped because it "
+              "had two validation and no test examples, and polygon labels were converted to boxes. "
+              "Training ran for 60 epochs (batch 32, 640 px, patience 15, default mosaic, colour and scale "
+              "augmentation) in 0.67 h on a Tesla T4. Per-class thresholds follow the test results: the "
+              "vague “obstacle” class needs 0.5 confidence, and “bin” is disabled because its recall was "
+              "0.026. ByteTrack gives each box a stable identity. Depth Anything V2 Metric-Outdoor-Small "
+              "runs in FP16 at a 392-pixel input and is refreshed every second frame. The real-video runs "
+              "in Section VII-D used a single-class stairs variant of the hazard detector (validation "
+              "mAP50 0.50), because the six-class weights evaluated in Table IV were not in the project's "
+              "model folder."))
+    add(("table", "TABLE II. HAZARD DATASET AFTER FILTERING (INSTANCES PER SPLIT)",
+         ["Class", "Train", "Valid", "Test"],
+         [["stairs", "183", "19", "14"], ["pole", "1637", "107", "92"], ["pillar", "510", "193", "175"],
+          ["bin", "36", "25", "38"], ["cone", "123", "32", "74"], ["obstacle", "234", "10", "143"],
+          ["Images with hazards", "1935", "210", "211"], ["Background images", "967", "341", "329"]],
+         [1.3, 0.7, 0.7, 0.7]))
     add(("h2", "B. Phase 2: scale-corrected 3D geometry"))
     add(("p", "Each depth value Z at pixel (u, v) is back-projected with a pinhole model, where "
               "f = (max(W, H)/2) / tan(θ/2) is the focal length in pixels and θ = 70° is the assumed field "
@@ -309,7 +343,7 @@ def build_content():
               "frames, GPS and compass headings, and speaks the returned alerts."))
 
     add(("h1", "VI.", "Testing"))
-    add(("p", "Table I lists scenarios with expected and obtained behaviour. Each row was produced by "
+    add(("p", "Table III lists scenarios with expected and obtained behaviour. Each row was produced by "
               "running the project code on a synthetic scene or a simulated route, not by hand. "
               f"All {passed} of {n_cases} scenarios passed. In addition, an automated suite of 37 tests "
               "(pytest) covers navigation, spatial geometry, the announcer and the web server. During "
@@ -321,7 +355,7 @@ def build_content():
     for tc in R["test_cases"]:
         obtained = tc["obtained"] + (f" ({tc['detail']})" if tc.get("detail") else "")
         rows.append([tc["id"], tc["scenario"], tc["expected"], obtained, tc["status"]])
-    add(("table", "TABLE I. SCENARIO TEST CASES (EXPECTED VS. OBTAINED)",
+    add(("table", "TABLE III. SCENARIO TEST CASES (EXPECTED VS. OBTAINED)",
          ["ID", "Scenario", "Expected", "Obtained", "Status"], rows, [0.35, 1.15, 0.72, 0.72, 0.42]))
 
     add(("h1", "VII.", "Result Analysis"))
@@ -329,11 +363,13 @@ def build_content():
     add(("p", f"On the held-out test split ({haz['images']} images, {haz['instances']} instances, executed "
               f"notebook) the six-class model reached precision {fmt(haz['precision'], 3)}, recall "
               f"{fmt(haz['recall'], 3)}, mAP50 {fmt(haz['map50'], 3)} and mAP50-95 {fmt(haz['map50_95'], 3)} "
-              f"at {fmt(haz['inference_ms_t4'], 1)} ms per image on a Tesla T4 (Table II, Fig. 4). Cones "
+              f"at {fmt(haz['inference_ms_t4'], 1)} ms per image on a Tesla T4 (Table IV, Fig. 4). The "
+              "validation split gave a higher mAP50 of 0.684, so the model generalises less well to unseen "
+              "images than validation suggests. Cones "
               "and pillars are detected well. Bins are almost never found (recall 0.026) because the training "
               "set contained only 36 bin examples, so the live system disables that class. The stairs "
               "estimate rests on only 14 test instances and should be read as indicative."))
-    add(("table", "TABLE II. HAZARD-MODEL TEST RESULTS PER CLASS",
+    add(("table", "TABLE IV. HAZARD-MODEL TEST RESULTS PER CLASS",
          ["Class", "Inst.", "P", "R", "mAP50", "mAP50-95"],
          [[a, str(b), fmt(p, 3), fmt(r_, 3), fmt(m, 3), fmt(m2, 3)] for a, b, p, r_, m, m2 in HAZARD_ROWS]
          + [["all", str(haz["instances"]), fmt(haz["precision"], 3), fmt(haz["recall"], 3),
@@ -357,7 +393,7 @@ def build_content():
          "Fig. 5. Distance error (left) and blocker detection rate (right) with and without ground-plane "
          "scale correction."))
     add(("h2", "C. Speed"))
-    add(("p", f"Table III gives the per-frame time measured on an {gpu} for a walking video "
+    add(("p", f"Table V gives the per-frame time measured on an {gpu} for a walking video "
               f"({'1280 px wide'}), with the COCO detector, the hazard detector, depth, spatial analysis "
               f"and drawing. Refreshing depth on every second frame lowers the total from "
               f"{fmt(lat1['TOTAL'], 1)} ms ({fmt(fps1, 1)} FPS) to {fmt(lat2['TOTAL'], 1)} ms "
@@ -365,7 +401,7 @@ def build_content():
               "about 0.1 ms."))
     stage_names = ["1. detect (COCO)", "2. detect (hazards)", "3. depth", "4. spatial",
                    "5. risk + announcer", "6. drawing", "TOTAL"]
-    add(("table", "TABLE III. MEAN TIME PER FRAME (ms)",
+    add(("table", "TABLE V. MEAN TIME PER FRAME (ms)",
          ["Stage", "Depth every frame", "Depth every 2nd frame"],
          [[s.split('. ')[-1], fmt(lat1[s], 1), fmt(lat2[s], 1)] for s in stage_names],
          [1.5, 0.95, 0.95]))
@@ -373,7 +409,7 @@ def build_content():
     add(("p", f"The full pipeline was run on {len(pipe)} clips ({fmt(total_s, 0)} s in total): a street "
               "clip, a crowded station walkway, a city sidewalk with a construction barrier, an indoor "
               "lobby, and a short indoor phone recording of a living room. There is no hand-labelled "
-              "ground truth, so Table IV reports what can be measured: speed (mean "
+              "ground truth, so Table VI reports what can be measured: speed (mean "
               f"{fmt(mean_fps, 1)} FPS including all models), alert rate and the share of frames with a "
               "blocked path. Fig. 6 shows a typical annotated frame with its depth map. The living-room "
               "clip is a failure case: the stairs detector fires on the patterned carpet and the "
@@ -381,12 +417,15 @@ def build_content():
               "that the stairs model, trained on outdoor scenes, is not reliable on indoor floors, "
               "and that the alert rate on the other four clips (6–48 per minute) is more representative. "
               "Whether individual stairs alerts on the street clips were correct was not checked by hand. "
+              "Messages spoken in these runs include “Truck approaching at 11 o'clock, 3 meters”, “Stop! "
+              "Path blocked, 3 meters. Keep Left.”, “Person approaching at 1 o'clock, 6 meters” and "
+              "“Stop! person ahead, 3 meters”; their correctness was likewise not verified. "
               + (f"As a distance sanity check, the depth-based distance to fully visible people was compared "
                  f"with the distance implied by a 1.7 m person height: the ratio had a median of "
                  f"{fmt(dc['median'], 2)} (interquartile range {fmt(dc['q25'], 2)}–{fmt(dc['q75'], 2)}, "
                  f"{dc['n']} measurements). Both estimates rely on assumptions, so this tests consistency, "
                  "not absolute accuracy." if dc else "")))
-    add(("table", "TABLE IV. FULL-PIPELINE BEHAVIOUR ON WALKING VIDEO",
+    add(("table", "TABLE VI. FULL-PIPELINE BEHAVIOUR ON WALKING VIDEO",
          ["Clip", "Length (s)", "FPS", "Alerts per min", "Urgent", "Blocked (%)"],
          [[r["clip"].replace(".mp4", "").replace("_30s_", "-").replace("part_", "walk_")
            .replace("city_street_youtube", "street").replace("live_demo_source", "living room*"),
@@ -397,28 +436,55 @@ def build_content():
          "Fig. 6. Prototype output on the sidewalk clip: annotated frame (left) with distance, clock "
          "direction, time-to-collision (magenta) and path status, and the metric depth map (right). "
          "*Failure case, see text."))
-    add(("h2", "E. Route guidance under GPS noise"))
+    ttc = {(r["speed"], r["true_ttc"]): r for r in R["ttc"]}
+    speeds = sorted({r["speed"] for r in R["ttc"]})
+    biases = [r["mean_estimate"] - r["true_ttc"] for r in R["ttc"] if r["mean_estimate"] is not None]
+    add(("h2", "E. Time-to-collision accuracy"))
+    add(("p", "The looming estimator was tested on a simulated 1.7 m tall person approaching a 1280×720 "
+              "camera at constant speed from 10 s before impact, with 1.5 px of noise on both box edges, "
+              "30 frames per second and 20 noise seeds per speed. Table VII lists the mean estimate at four "
+              "true values of time-to-collision. An estimate was available at every checkpoint, so "
+              "the 6 s urgency range of the alert score is covered. The estimate was too large by "
+              f"{fmt(min(biases), 2)}–{fmt(max(biases), 2)} s at every speed, close to half of the one-second "
+              "window used for the slope fit: the fit reports the average over the last second, so it lags. "
+              "The alert therefore arrives about half a second later than ideal, which is "
+              "1.5 m of travel for a 3 m/s bicycle. Subtracting half the window would likely remove most "
+              "of this bias, but that was not tested."))
+    add(("table", "TABLE VII. ESTIMATED TIME-TO-COLLISION (s) AT FOUR TRUE VALUES",
+         ["Closing speed", "True 6.0", "True 4.0", "True 3.0", "True 2.0"],
+         [[f"{s:g} m/s"] + [fmt(ttc[(s, t)]["mean_estimate"], 2) for t in (6.0, 4.0, 3.0, 2.0)]
+          for s in speeds], [0.9, 0.6, 0.6, 0.6, 0.6]))
+    add(("h2", "F. Route guidance under GPS noise"))
     add(("p", "A 155 m two-leg route was walked 20 times per noise level at 1.4 m/s with Gaussian GPS "
-              "error, a compass error of 8° and a one-second sample interval (Table V). Navigation reached "
+              "error, a compass error of 8° and a one-second sample interval (Table VIII). Navigation reached "
               "the turn and the destination in all runs, the distance countdown decreased monotonically "
               "between the first and last message in all runs, and no run raised a false off-route warning. "
               f"About {fmt(sum(r['messages_per_100m'] for r in nav) / len(nav), 1)} messages per 100 m "
               "were spoken. These are simulations; the compass-to-heading conversion on a real phone has "
               "not been validated on a device."))
-    add(("table", "TABLE V. ROUTE-GUIDANCE SIMULATION (20 RUNS PER ROW)",
+    add(("table", "TABLE VIII. ROUTE-GUIDANCE SIMULATION (20 RUNS PER ROW)",
          ["GPS σ (m)", "Arrived (%)", "Turn step (%)", "False off-route (%)", "Msgs/100 m"],
          [[fmt(r["gps_sigma_m"], 0), fmt(r["arrived_pct"], 0), fmt(r["turn_step_pct"], 0),
            fmt(r["false_off_route_pct"], 0), fmt(r["messages_per_100m"], 1)] for r in nav],
          [0.6, 0.65, 0.7, 0.9, 0.6]))
 
-    add(("h1", "VIII.", "Limitations"))
+    add(("h1", "VIII.", "Discussion and Limitations"))
+    add(("p", "Three results shape the design. First, scale correction is what makes a 3 m corridor "
+              "usable with a monocular network: without it the distance error grows in proportion to the "
+              "scale error and blockers leave the corridor. Second, depth estimation is the largest cost "
+              "(Table V), so refreshing it every second frame buys about four frames per second at the price "
+              "of slightly older geometry. Third, the hazard detector generalises less well than its "
+              "validation score suggests (0.684 versus 0.556 mAP50), and the classes with few examples "
+              "(stairs, bins) are the weakest, so rare but dangerous hazards need more data. "
+              "Verification also paid off: the explicit scenario tests caught four defects that no "
+              "single screenshot would have shown."))
     add(("p", "Monocular depth and a fixed camera height make distances approximate; camera pitch, "
               "lighting, motion blur and reflective surfaces reduce accuracy, and a phone held at a "
               "different height changes the scale. The controlled experiments use idealised geometry. "
               "The real-video clips have no ground-truth labels, the stairs detector produced false "
               "alarms on an indoor patterned floor, the hazard test set has few stairs examples, the bin "
               "class is not usable, and the weights in the repository's live configuration are a "
-              "single-class stairs model rather than the six-class model evaluated in Table II. No study with "
+              "single-class stairs model rather than the six-class model evaluated in Table IV. No study with "
               "visually impaired users has been carried out. The prototype has not been validated for "
               "safety and must be used only together with a cane, a guide dog or human support."))
 
@@ -835,14 +901,23 @@ def render_pdf(content, path):
     doc.build(story)
 
 
+def save_with_fallback(render, content, path):
+    """Write `path`; if it is open in another program, write a numbered copy instead."""
+    for attempt in range(10):
+        target = path if attempt == 0 else path.with_name(f"{path.stem}_v{attempt + 1}{path.suffix}")
+        try:
+            render(content, target)
+            print("Wrote", target)
+            return target
+        except PermissionError:
+            print(f"{target.name} is open in another program; trying a new name")
+    raise PermissionError(path)
+
+
 def main():
     content = build_content()
-    docx_path = DOCS / "SafeStride_Assist_IEEE_Paper.docx"
-    pdf_path = DOCS / "SafeStride_Assist_IEEE_Paper.pdf"
-    render_docx(content, docx_path)
-    render_pdf(content, pdf_path)
-    print("Wrote", docx_path)
-    print("Wrote", pdf_path)
+    save_with_fallback(render_pdf, content, DOCS / "SafeStride_Assist_IEEE_Paper.pdf")
+    save_with_fallback(render_docx, content, DOCS / "SafeStride_Assist_IEEE_Paper.docx")
 
 
 if __name__ == "__main__":

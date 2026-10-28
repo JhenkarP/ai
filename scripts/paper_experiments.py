@@ -472,9 +472,46 @@ def frame_figure():
                 fy=1500 / image.shape[1]), [cv2.IMWRITE_JPEG_QUALITY, 90])
 
 
+def ttc_experiment():
+    """Looming time-to-collision on a simulated object approaching at constant speed."""
+    from blindnav.risk import MotionTracker
+
+    f = focal_length((720, 1280))
+    targets = (6.0, 4.0, 3.0, 2.0)
+    rows = []
+    for speed in (1.0, 1.5, 3.0):  # m/s closing speed: slow walk, brisk walk, bicycle
+        samples = {t: [] for t in targets}
+        for seed in range(20):
+            rng = np.random.default_rng(seed)
+            tracker = MotionTracker()
+            z0, t = speed * 10.0, 0.0  # starts 10 s from impact
+            while True:
+                z = z0 - speed * t
+                true_ttc = z / speed
+                if true_ttc < 1.5:
+                    break
+                height = f * 1.7 / z  # a 1.7 m tall person
+                y2 = 600 + rng.normal(0, 1.5)
+                y1 = y2 - height + rng.normal(0, 1.5)
+                det = Detection(box=(500, int(round(y1)), 560, int(round(y2))), class_name="person",
+                                confidence=0.9, distance=z, track_id=1)
+                tracker.update(t, [det], None, 720)
+                for target in targets:
+                    if abs(true_ttc - target) < 0.5 / 30 * speed / speed * 1.0:
+                        samples[target].append(det.ttc)
+                t += 1 / 30
+        for target in targets:
+            values = samples[target]
+            found = [v for v in values if v is not None]
+            rows.append({"speed": speed, "true_ttc": target, "available_pct": 100 * len(found) / max(len(values), 1),
+                         "mean_estimate": float(np.mean(found)) if found else None,
+                         "mean_abs_error": float(np.mean([abs(v - target) for v in found])) if found else None})
+    results["ttc"] = rows
+
+
 def main(parts):
     steps = {"scale": scale_experiment, "cases": scenario_table, "nav": navigation_experiment,
-             "figures": lambda: (corridor_figure(), hazard_figures()),
+             "figures": lambda: (corridor_figure(), hazard_figures()), "ttc": ttc_experiment,
              "latency": latency_experiment, "pipeline": pipeline_experiment, "frame": frame_figure}
     out_file = ASSETS / "results.json"
     if out_file.exists():

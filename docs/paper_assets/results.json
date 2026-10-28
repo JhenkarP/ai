@@ -391,5 +391,91 @@
     "median": 1.0811636194649177,
     "q25": 0.8683154050448794,
     "q75": 1.3448687377062658
-  }
+  },
+  "ttc": [
+    {
+      "speed": 1.0,
+      "true_ttc": 6.0,
+      "available_pct": 100.0,
+      "mean_estimate": 6.417210694356022,
+      "mean_abs_error": 0.4172106943560233
+    },
+    {
+      "speed": 1.0,
+      "true_ttc": 4.0,
+      "available_pct": 100.0,
+      "mean_estimate": 4.496961914013991,
+      "mean_abs_error": 0.4969619140139919
+    },
+    {
+      "speed": 1.0,
+      "true_ttc": 3.0,
+      "available_pct": 100.0,
+      "mean_estimate": 3.4831578209831795,
+      "mean_abs_error": 0.48315782098317966
+    },
+    {
+      "speed": 1.0,
+      "true_ttc": 2.0,
+      "available_pct": 100.0,
+      "mean_estimate": 2.4798901594319727,
+      "mean_abs_error": 0.47989015943197255
+    },
+    {
+      "speed": 1.5,
+      "true_ttc": 6.0,
+      "available_pct": 100.0,
+      "mean_estimate": 6.3620163168074555,
+      "mean_abs_error": 0.3817740226420173
+    },
+    {
+      "speed": 1.5,
+      "true_ttc": 4.0,
+      "available_pct": 100.0,
+      "mean_estimate": 4.501774104613746,
+      "mean_abs_error": 0.5017741046137456
+    },
+    {
+      "speed": 1.5,
+      "true_ttc": 3.0,
+      "available_pct": 100.0,
+      "mean_estimate": 3.477667755409599,
+      "mean_abs_error": 0.47766775540959944
+    },
+    {
+      "speed": 1.5,
+      "true_ttc": 2.0,
+      "available_pct": 100.0,
+      "mean_estimate": 2.47980557329114,
+      "mean_abs_error": 0.47980557329114026
+    },
+    {
+      "speed": 3.0,
+      "true_ttc": 6.0,
+      "available_pct": 100.0,
+      "mean_estimate": 6.35120178122335,
+      "mean_abs_error": 0.4767358808618041
+    },
+    {
+      "speed": 3.0,
+      "true_ttc": 4.0,
+      "available_pct": 100.0,
+      "mean_estimate": 4.518452834036845,
+      "mean_abs_error": 0.5184528340368457
+    },
+    {
+      "speed": 3.0,
+      "true_ttc": 3.0,
+      "available_pct": 100.0,
+      "mean_estimate": 3.475354318431156,
+      "mean_abs_error": 0.4753543184311567
+    },
+    {
+      "speed": 3.0,
+      "true_ttc": 2.0,
+      "available_pct": 100.0,
+      "mean_estimate": 2.4852059352380893,
+      "mean_abs_error": 0.48520593523808964
+    }
+  ]
 }
