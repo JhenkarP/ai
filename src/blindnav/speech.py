@@ -45,7 +45,7 @@ class Synthesizer:
 
     def __call__(self, text: str) -> np.ndarray:
         if text not in self.cache:
-            path = os.path.join(tempfile.gettempdir(), "blindnav_tts.wav")
+            path = os.path.join(tempfile.gettempdir(), f"blindnav_tts_{os.getpid()}.wav")
             audio_format = self.client.CreateObject("SAPI.SpAudioFormat")
             audio_format.Type = SAPI_22KHZ_16BIT_MONO
             stream = self.client.CreateObject("SAPI.SpFileStream")
@@ -109,20 +109,31 @@ class LiveSpeaker:
         import sounddevice as sd
         if alert.level == URGENT:
             sd.stop()  # an urgent alert interrupts whatever is being said
-            while not self.queue.empty():
-                self.queue.get_nowait()
+            try:
+                while True:
+                    self.queue.get_nowait()
+            except queue.Empty:
+                pass  # the worker may have emptied the queue between two checks
         self.queue.put((alert, text))
 
     def _worker(self) -> None:
         import comtypes
         import sounddevice as sd
         comtypes.CoInitialize()  # Windows speech uses COM, which must be started per thread
-        primary = Synthesizer(self.lang, voice_index=0)
-        secondary = Synthesizer(self.lang, voice_index=1)
+        try:
+            primary = Synthesizer(self.lang, voice_index=0)
+            secondary = Synthesizer(self.lang, voice_index=1)
+        except Exception as exc:  # no speech engine: report once instead of dying silently
+            print(f"Voice output unavailable: {type(exc).__name__}: {exc}")
+            while True:
+                self.queue.get()
         while True:
             alert, text = self.queue.get()
-            sd.play(render(alert, text, _synth_for(alert, primary, secondary)), SAMPLE_RATE)
-            sd.wait()
+            try:
+                sd.play(render(alert, text, _synth_for(alert, primary, secondary)), SAMPLE_RATE)
+                sd.wait()
+            except Exception as exc:  # one bad clip must not stop all later alerts
+                print(f"Could not play alert: {type(exc).__name__}: {exc}")
 
 
 class SoundtrackRecorder:
@@ -148,7 +159,7 @@ class SoundtrackRecorder:
                 track[start:end] = clip[:end - start]
                 next_available = end
 
-        wav_path = os.path.join(tempfile.gettempdir(), "blindnav_track.wav")
+        wav_path = os.path.join(tempfile.gettempdir(), f"blindnav_track_{os.getpid()}.wav")
         with wave.open(wav_path, "wb") as w:
             w.setnchannels(2)
             w.setsampwidth(2)
