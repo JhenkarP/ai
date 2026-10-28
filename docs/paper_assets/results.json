@@ -1,0 +1,395 @@
+{
+  "scale_experiment": [
+    {
+      "scale": 1.0,
+      "distance": 1.5,
+      "corrected_error_m": 0.02354393144769107,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": 0.0469107687473298,
+      "uncorrected_detect": 1.0
+    },
+    {
+      "scale": 1.0,
+      "distance": 2.0,
+      "corrected_error_m": 0.04544875672336368,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": 0.06541970372200012,
+      "uncorrected_detect": 1.0
+    },
+    {
+      "scale": 1.0,
+      "distance": 2.5,
+      "corrected_error_m": 0.011477634868716446,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": 0.0913240194320677,
+      "uncorrected_detect": 1.0
+    },
+    {
+      "scale": 1.0,
+      "distance": 2.8,
+      "corrected_error_m": 0.015197428037784455,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": 0.10175030231475812,
+      "uncorrected_detect": 1.0
+    },
+    {
+      "scale": 1.5,
+      "distance": 1.5,
+      "corrected_error_m": 0.02354405462377973,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": 0.6740267634391786,
+      "uncorrected_detect": 1.0
+    },
+    {
+      "scale": 1.5,
+      "distance": 2.0,
+      "corrected_error_m": 0.045448734489550224,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": 0.8761048316955566,
+      "uncorrected_detect": 1.0
+    },
+    {
+      "scale": 1.5,
+      "distance": 2.5,
+      "corrected_error_m": 0.011477617687614572,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": null,
+      "uncorrected_detect": 0.0
+    },
+    {
+      "scale": 1.5,
+      "distance": 2.8,
+      "corrected_error_m": 0.015197314706426823,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": null,
+      "uncorrected_detect": 0.0
+    },
+    {
+      "scale": 2.0,
+      "distance": 1.5,
+      "corrected_error_m": 0.02354393144769107,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": 1.3780017137527465,
+      "uncorrected_detect": 1.0
+    },
+    {
+      "scale": 2.0,
+      "distance": 2.0,
+      "corrected_error_m": 0.04544875672336368,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": null,
+      "uncorrected_detect": 0.0
+    },
+    {
+      "scale": 2.0,
+      "distance": 2.5,
+      "corrected_error_m": 0.011477634868716446,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": null,
+      "uncorrected_detect": 0.0
+    },
+    {
+      "scale": 2.0,
+      "distance": 2.8,
+      "corrected_error_m": 0.015197428037784455,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": null,
+      "uncorrected_detect": 0.0
+    },
+    {
+      "scale": 3.0,
+      "distance": 1.5,
+      "corrected_error_m": 0.02354405462377973,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": null,
+      "uncorrected_detect": 0.0
+    },
+    {
+      "scale": 3.0,
+      "distance": 2.0,
+      "corrected_error_m": 0.045448734489550224,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": null,
+      "uncorrected_detect": 0.0
+    },
+    {
+      "scale": 3.0,
+      "distance": 2.5,
+      "corrected_error_m": 0.011477617687614572,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": null,
+      "uncorrected_detect": 0.0
+    },
+    {
+      "scale": 3.0,
+      "distance": 2.8,
+      "corrected_error_m": 0.015197314706426823,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": null,
+      "uncorrected_detect": 0.0
+    }
+  ],
+  "scale_summary": {
+    "1.0": {
+      "corrected_error_m": 0.023916937769388913,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": 0.07635119855403893,
+      "uncorrected_detect": 1.0
+    },
+    "1.5": {
+      "corrected_error_m": 0.023916930376842838,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": 0.7750657975673676,
+      "uncorrected_detect": 0.5
+    },
+    "2.0": {
+      "corrected_error_m": 0.023916937769388913,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": 1.3780017137527465,
+      "uncorrected_detect": 0.25
+    },
+    "3.0": {
+      "corrected_error_m": 0.023916930376842838,
+      "corrected_detect": 1.0,
+      "uncorrected_error_m": null,
+      "uncorrected_detect": 0.0
+    }
+  },
+  "test_cases": [
+    {
+      "id": "TC1",
+      "scenario": "Surface rising away from user (slope +0.5)",
+      "expected": "stairs up",
+      "obtained": "stairs up",
+      "status": "Pass"
+    },
+    {
+      "id": "TC2",
+      "scenario": "Surface falling away from user (slope -0.5)",
+      "expected": "stairs down",
+      "obtained": "stairs down",
+      "status": "Pass"
+    },
+    {
+      "id": "TC3",
+      "scenario": "Flat ground inside the stairs box",
+      "expected": "no direction",
+      "obtained": "no direction",
+      "status": "Pass"
+    },
+    {
+      "id": "TC4",
+      "scenario": "Obstacle 2.0 m ahead, depth scale \u00d72",
+      "expected": "blocked, 2.0 \u00b1 0.3 m",
+      "obtained": "blocked, 2.0 \u00b1 0.3 m",
+      "status": "Pass",
+      "detail": "1.95 m"
+    },
+    {
+      "id": "TC5",
+      "scenario": "Obstacle 1.2 m to the side (outside corridor)",
+      "expected": "path clear",
+      "obtained": "path clear",
+      "status": "Pass"
+    },
+    {
+      "id": "TC6",
+      "scenario": "Obstacle slightly right of centre",
+      "expected": "keep left",
+      "obtained": "keep left",
+      "status": "Pass"
+    },
+    {
+      "id": "TC7",
+      "scenario": "Detection with undefined distance",
+      "expected": "no alert",
+      "obtained": "no alert",
+      "status": "Pass"
+    },
+    {
+      "id": "TC8",
+      "scenario": "Same obstacle returns after path cleared",
+      "expected": "announced again",
+      "obtained": "announced again",
+      "status": "Pass"
+    },
+    {
+      "id": "TC9",
+      "scenario": "GPS 150 m off the route (two readings)",
+      "expected": "off-route warning",
+      "obtained": "off-route warning",
+      "status": "Pass"
+    },
+    {
+      "id": "TC10",
+      "scenario": "Arrival, then GPS jitter 40 m away",
+      "expected": "arrival announced once",
+      "obtained": "arrival announced once",
+      "status": "Pass"
+    }
+  ],
+  "navigation": [
+    {
+      "gps_sigma_m": 3.0,
+      "arrived_pct": 100.0,
+      "turn_step_pct": 100.0,
+      "false_off_route_pct": 0.0,
+      "countdown_pct": 100.0,
+      "messages_per_100m": 8.935483870967742
+    },
+    {
+      "gps_sigma_m": 6.0,
+      "arrived_pct": 100.0,
+      "turn_step_pct": 100.0,
+      "false_off_route_pct": 0.0,
+      "countdown_pct": 100.0,
+      "messages_per_100m": 8.774193548387096
+    },
+    {
+      "gps_sigma_m": 10.0,
+      "arrived_pct": 100.0,
+      "turn_step_pct": 100.0,
+      "false_off_route_pct": 0.0,
+      "countdown_pct": 100.0,
+      "messages_per_100m": 8.387096774193548
+    }
+  ],
+  "hazard_test": {
+    "images": 540,
+    "instances": 536,
+    "precision": 0.667,
+    "recall": 0.584,
+    "map50": 0.556,
+    "map50_95": 0.401,
+    "inference_ms_t4": 11.4,
+    "per_class": {
+      "stairs": {
+        "map50": 0.571,
+        "map50_95": 0.437
+      },
+      "pole": {
+        "map50": 0.585,
+        "map50_95": 0.418
+      },
+      "pillar": {
+        "map50": 0.746,
+        "map50_95": 0.589
+      },
+      "bin": {
+        "map50": 0.0339,
+        "map50_95": 0.0293
+      },
+      "cone": {
+        "map50": 0.942,
+        "map50_95": 0.707
+      },
+      "obstacle": {
+        "map50": 0.458,
+        "map50_95": 0.228
+      }
+    }
+  },
+  "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "latency_ms": {
+    "1": {
+      "1. detect (COCO)": 12.3,
+      "2. detect (hazards)": 10.9,
+      "3. depth": 29.7,
+      "4. spatial": 7.2,
+      "5. risk + announcer": 0.1,
+      "6. drawing": 1.9,
+      "TOTAL": 62.2
+    },
+    "2": {
+      "1. detect (COCO)": 12.9,
+      "2. detect (hazards)": 11.3,
+      "3. depth": 15.1,
+      "4. spatial": 7.5,
+      "5. risk + announcer": 0.1,
+      "6. drawing": 2.1,
+      "TOTAL": 49.0
+    }
+  },
+  "pipeline": [
+    {
+      "clip": "city_street_youtube.mp4",
+      "seconds": 20.0,
+      "fps": 16.56631236405005,
+      "alerts": 2,
+      "alerts_per_min": 6.0,
+      "urgent": 0,
+      "blocked_pct": 0.0,
+      "samples": [
+        "Truck approaching at 11 o'clock, 3 meters",
+        "Car approaching at 11 o'clock, 8 meters"
+      ],
+      "n_ratio": 0
+    },
+    {
+      "clip": "live_demo_source.mp4",
+      "seconds": 9.583311111111112,
+      "fps": 21.79479713997382,
+      "alerts": 28,
+      "alerts_per_min": 175.3047543298651,
+      "urgent": 28,
+      "blocked_pct": 100.0,
+      "samples": [
+        "Careful, stairs going up ahead, 3 meters. Keep Left.",
+        "Stop! stairs ahead, 2 meters",
+        "Stop! Path blocked, 3 meters. Keep Left."
+      ],
+      "n_ratio": 49
+    },
+    {
+      "clip": "part_001_30s_1.mp4",
+      "seconds": 20.0,
+      "fps": 14.541024732431156,
+      "alerts": 16,
+      "alerts_per_min": 48.0,
+      "urgent": 8,
+      "blocked_pct": 1.75,
+      "samples": [
+        "Person approaching at 1 o'clock, 6 meters",
+        "Stop! Path blocked, 3 meters. Keep Left.",
+        "Stop! Path blocked, 3 meters. Keep Left."
+      ],
+      "n_ratio": 6456
+    },
+    {
+      "clip": "part_002_30s_1.mp4",
+      "seconds": 20.0,
+      "fps": 9.19990928153137,
+      "alerts": 8,
+      "alerts_per_min": 24.0,
+      "urgent": 6,
+      "blocked_pct": 0.3333333333333333,
+      "samples": [
+        "Stop! bus approaching ahead, 3 meters",
+        "Careful, stairs going up at 1 o'clock, 3 meters",
+        "Stop! stairs at 1 o'clock, 3 meters"
+      ],
+      "n_ratio": 4243
+    },
+    {
+      "clip": "part_003_30s_2.mp4",
+      "seconds": 20.0,
+      "fps": 10.886582395244337,
+      "alerts": 5,
+      "alerts_per_min": 15.0,
+      "urgent": 5,
+      "blocked_pct": 39.083333333333336,
+      "samples": [
+        "Stop! obstacle ahead, 2 meters",
+        "Careful, stairs going down ahead, 3 meters. Keep Right.",
+        "Stop! person ahead, 3 meters"
+      ],
+      "n_ratio": 1363
+    }
+  ],
+  "distance_consistency": {
+    "n": 12111,
+    "median": 1.0811636194649177,
+    "q25": 0.8683154050448794,
+    "q75": 1.3448687377062658
+  }
+}
