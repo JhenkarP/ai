@@ -211,10 +211,11 @@ class SpatialAnalyzer:
         depth = values[:, 2]
         if float(depth.max() - depth.min()) < STAIR_MIN_DEPTH_RANGE:
             return None
+        # `elevations` grow upward: a surface that rises with distance is a staircase going up.
         slope = float(np.polyfit(depth, elevations, 1)[0])
-        if slope < -STAIR_SLOPE_THRESHOLD:
-            return "up"
         if slope > STAIR_SLOPE_THRESHOLD:
+            return "up"
+        if slope < -STAIR_SLOPE_THRESHOLD:
             return "down"
         return None
 
