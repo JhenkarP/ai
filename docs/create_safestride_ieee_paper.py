@@ -24,8 +24,8 @@ DOCS = ROOT / "docs"
 ASSETS = DOCS / "paper_assets"
 R = json.loads((ASSETS / "results.json").read_text(encoding="utf-8"))
 
-TITLE = ("SafeStride Assist: An AI-Based Safe Walking Assistance System for People with "
-         "Visual Impairments Using Monocular Depth and Ground-Plane Reasoning")
+TITLE = ("Safe-Stride Assist: An AI-Based Safe Walking Assistance System for People with "
+         "Visual Impairments")
 AUTHORS = [
     ("Jhenkar P", "Dept. of Computer Science and Engineering", "The National Institute of Engineering",
      "Mysuru, India", "2023cs_JHENKARP_b@nie.ac.in"),
@@ -144,7 +144,7 @@ def build_content():
     add(("abstract",
          "Visually impaired pedestrians need to know whether an obstacle blocks their next steps, how far "
          "away it is, and what to do about it, but most camera-based assistants stop at drawing bounding "
-         "boxes. This paper presents SafeStride Assist, a research prototype that turns a single camera "
+         "boxes. This paper presents Safe-Stride Assist, a research prototype that turns a single camera "
          "stream into short, prioritised spoken guidance. The system combines YOLO11s detection, ByteTrack "
          "tracking, Depth Anything V2 monocular depth, and a geometric reasoning layer: RANSAC ground-plane "
          "fitting converts relative depth to approximate metres using the camera height, and a 1 m × 3 m "
@@ -156,7 +156,7 @@ def build_content():
          f"{fmt(100 * (1 - scale['1.5']['uncorrected_detect']), 0)} % of the blockers at a ×1.5 scale error and "
          "all of them at ×3. A six-class hazard "
          f"detector reached {fmt(haz['map50'], 3)} mAP50 on {haz['images']} held-out images, and the full "
-         f"pipeline ran at {fmt(fps2, 1)} FPS on a laptop GPU ({gpu.replace('NVIDIA GeForce ', '').replace(' Laptop GPU', '')}). SafeStride "
+         f"pipeline ran at {fmt(fps2, 1)} FPS on a laptop GPU ({gpu.replace('NVIDIA GeForce ', '').replace(' Laptop GPU', '')}). Safe-Stride "
          "is an educational prototype, not a certified mobility device."))
     add(("keywords", KEYWORDS))
 
@@ -167,7 +167,7 @@ def build_content():
               "objects, approaching vehicles, steps and unfamiliar barriers. The World Health Organization "
               "stresses that such support must be accessible and understandable [6]."))
     add(("p", "Detection alone is not enough. A person 15 m away at the roadside is irrelevant, whereas an "
-              "unlabelled bin 2 m ahead in the walking line is urgent. SafeStride Assist therefore treats "
+              "unlabelled bin 2 m ahead in the walking line is urgent. Safe-Stride Assist therefore treats "
               "four questions as first-class outputs: is the object in the user's path, how far is it, is it "
               "approaching, and what should the user do. The answer is delivered as a short sentence such "
               "as “Stop! Path blocked, 2 meters. Keep Left.”"))
@@ -234,7 +234,7 @@ def build_content():
               "speaks through Windows speech, the browser or the phone. Learned perception is kept apart from "
               "deterministic reasoning so each can be tested on its own."))
     add(("fig", "SafeStride_arch", "paper_assets/fig_arch.png",
-         "Fig. 1. Local perception-to-guidance pipeline of SafeStride Assist."))
+         "Fig. 1. Local perception-to-guidance pipeline of Safe-Stride Assist."))
     add(("h2", "B. Walking-corridor geometry"))
     add(("p", "The corridor is a 1 m wide and 3 m long region on the ground in front of the camera "
               "(Fig. 2). A point belongs to a blocker when it lies inside the corridor and between 0.25 m "
@@ -489,7 +489,7 @@ def build_content():
               "safety and must be used only together with a cane, a guide dog or human support."))
 
     add(("h1", "IX.", "Conclusion and Future Work"))
-    add(("p", "SafeStride Assist shows that one camera can give path-aware, prioritised guidance when "
+    add(("p", "Safe-Stride Assist shows that one camera can give path-aware, prioritised guidance when "
               "detection, tracking, scale-corrected monocular depth and corridor reasoning are combined, "
               f"running at about {fmt(fps2, 0)} FPS on a laptop GPU. Ground-plane scale correction "
               "removed the large distance errors that a constant depth-scale error produces, and the "
