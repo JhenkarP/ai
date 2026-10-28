@@ -476,8 +476,10 @@ export default function App() {
     startCameraOrientationUpdates();
     if (!headingWatcher.current) {
       headingWatcher.current = await Location.watchHeadingAsync((heading) => {
-        if (heading.accuracy > 0 && heading.magHeading >= 0 && heading.trueHeading >= 0) {
-          declinationRef.current = heading.trueHeading - heading.magHeading;
+        // Declination (true minus magnetic north) comes from a geomagnetic model, so it is
+        // valid even while the compass itself is still uncalibrated (accuracy 0).
+        if (heading.magHeading >= 0 && heading.trueHeading >= 0) {
+          declinationRef.current = ((heading.trueHeading - heading.magHeading + 540) % 360) - 180;
         }
         refreshCameraBearing();
       });
@@ -503,7 +505,8 @@ export default function App() {
   async function setRoute() {
     if (!destination.trim()) return;
     try {
-      await ensureCurrentLocation();
+      // Keep GPS updating after the route exists, even if monitoring was not started yet.
+      await startLocationUpdates();
       const response = await fetch(`${backend.replace(/\/$/, '')}/route`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
