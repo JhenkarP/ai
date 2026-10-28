@@ -127,8 +127,13 @@ class NavigationManager:
         deviation, remaining = self._route_metrics(position)
         self.distance_remaining = remaining
         if direct_remaining <= self.arrival_meters:
+            already_arrived = self.arrived
             self.arrived = True
             self.distance_remaining = direct_remaining
+            if already_arrived:  # announced once; do not nag while the user stands there
+                return NavigationUpdate(active=True, arrived=True, event_id=self.event_id,
+                                        distance_remaining=direct_remaining,
+                                        step_index=self.step_index)
             return self._event("You have arrived at your destination.", direct_remaining, arrived=True)
 
         accuracy_tolerance = min(100.0, max(0.0, accuracy * 1.5)) if accuracy is not None else 0.0

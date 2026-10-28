@@ -145,3 +145,17 @@ def test_turn_advances_when_gps_sample_jumps_past_waypoint():
 
     assert after_turn.step_index == 1
     assert after_turn.message == "Turn right to face the next road. Stop when aligned."
+
+
+def test_arrival_is_announced_once_and_not_repeated():
+    manager = NavigationManager(repeat_after=0.0)
+    manager.set_route(make_route(), (0.0, 0.002))
+
+    first = manager.update(0.0, 0.002)
+    second = manager.update(0.0, 0.002)
+
+    assert first.message == "You have arrived at your destination."
+    assert first.arrived is True
+    assert second.message is None
+    assert second.arrived is True
+    assert second.event_id == first.event_id
