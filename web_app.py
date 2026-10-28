@@ -4,6 +4,7 @@ import argparse
 import base64
 import cgi
 import json
+import math
 import os
 import secrets
 import shutil
@@ -29,6 +30,7 @@ from blindnav.visualize import TrailDrawer, draw_detections, draw_fps, draw_path
 
 ROOT = Path(__file__).parent
 WEB = ROOT / "web"
+MODELS = ROOT / "models"
 UPLOADS = ROOT / "data" / "uploads"
 state_lock = threading.Lock()
 inference_lock = threading.Lock()
@@ -86,6 +88,13 @@ SCREEN_VIEWER_HTML = r"""<!doctype html>
     </script>
 </body>
 </html>"""
+
+
+def _finite_number(value) -> float | None:
+    """A JSON number as float, or None for null, booleans, strings, NaN and infinity."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) else None
 
 
 def _json_request(url: str) -> dict:
@@ -189,22 +198,29 @@ def _walking_route(start: tuple[float, float], destination: tuple[float, float])
 
 class InferenceEngine:
     def __init__(self, no_depth: bool, no_hazards: bool, depth_every: int = 2):
-        self.detector = Detector()
+        self.detector = Detector(str(MODELS / "yolo11s.pt"))
         self.hazard_detector = None
         self.door_detector = None
-        if not no_hazards and Path("models/hazards.pt").exists():
-            self.hazard_detector = Detector("models/hazards.pt", class_conf=HAZARD_CLASS_CONF,
+        if not no_hazards and (MODELS / "hazards.pt").exists():
+            self.hazard_detector = Detector(str(MODELS / "hazards.pt"), class_conf=HAZARD_CLASS_CONF,
                                             all_classes=True, id_offset=100_000)
-        if Path("models/doors.pt").exists():
-            self.door_detector = Detector("models/doors.pt", all_classes=True, id_offset=200_000)
+        if (MODELS / "doors.pt").exists():
+            self.door_detector = Detector(str(MODELS / "doors.pt"), all_classes=True, id_offset=200_000)
         self.depth = None if no_depth else self._load_depth()
         self.depth_every = max(1, depth_every)
+        self.audio = LiveSpeaker("en")
+        self.reset()
+
+    def reset(self) -> None:
+        """Forget everything about the previous video or camera session."""
+        for detector in (self.detector, self.hazard_detector, self.door_detector):
+            if detector:
+                detector.reset_tracking()
         self.depth_frame = None
         self.frame_index = 0
         self.spatial = SpatialAnalyzer()
         self.motion = MotionTracker()
         self.announcer = Announcer()
-        self.audio = LiveSpeaker("en")
         self.trails = TrailDrawer()
         self.started = time.perf_counter()
         self.last_guidance = None
@@ -222,7 +238,8 @@ class InferenceEngine:
                 state["status"] = f"Depth unavailable: {type(exc).__name__}"
             return None
 
-    def frame(self, image: np.ndarray, speak_alert: bool = True):
+    def frame(self, image: np.ndarray, speak_alert: bool = True, timestamp: float | None = None):
+        """`timestamp`: video time in seconds. Without it, wall-clock time since start is used."""
         self.frame_index += 1
         started = time.perf_counter()
         detections = self.detector.detect(image)
@@ -234,14 +251,15 @@ class InferenceEngine:
         alert_text = None
         active_alerts = []
         if self.depth:
-            if self.depth_frame is None or self.frame_index % self.depth_every == 1:
+            stale = self.depth_frame is None or self.depth_frame.shape != image.shape[:2]
+            if stale or (self.frame_index - 1) % self.depth_every == 0:
                 self.depth_frame = self.depth.estimate(image)
             depth = self.depth_frame
             for detection in detections:
                 detection.distance = object_distance(depth, detection.box)
             path = self.spatial.analyze(depth, detections)
             detections = keep_confirmed_stairs(detections)
-            elapsed = time.perf_counter() - self.started
+            elapsed = timestamp if timestamp is not None else time.perf_counter() - self.started
             self.motion.update(elapsed, detections, path, image.shape[0])
             active_alerts = rank_alerts(detections, path)
             if active_alerts:
@@ -302,6 +320,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *_args):
         return
+
+    def handle(self):
+        try:
+            super().handle()
+        except ConnectionError:
+            pass  # the client went away (on Windows this is often ConnectionAbortedError)
+
+    @staticmethod
+    def _public_state() -> dict:
+        """State for clients. The user's GPS position stays on the server."""
+        with state_lock:
+            return {key: value for key, value in state.items() if key != "location"}
 
     def _screen_token_is_valid(self, token: str) -> bool:
         with screen_share_lock:
@@ -425,11 +455,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         route = urlparse(self.path)
         if route.path == "/health":
-            with state_lock:
-                self._json({"ok": True, **state})
+            self._json({"ok": True, **self._public_state()})
         elif route.path == "/state":
-            with state_lock:
-                self._json(dict(state))
+            self._json(self._public_state())
         elif route.path == "/stream":
             self._stream()
         elif route.path == "/places":
@@ -529,20 +557,22 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(self.rfile.read(content_length))
             heading_age_ms = payload.get("heading_age_ms")
-            heading_timestamp = payload.get("heading_timestamp")
-            if (isinstance(heading_age_ms, (int, float)) and not isinstance(heading_age_ms, bool)
-                    and 0 <= heading_age_ms < float("inf")):
+            heading_timestamp = _finite_number(payload.get("heading_timestamp"))
+            if _finite_number(heading_age_ms) is not None and heading_age_ms >= 0:
                 heading_timestamp = time.time() * 1000 - heading_age_ms
+            latitude, longitude = float(payload["latitude"]), float(payload["longitude"])
+            if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+                raise ValueError("Coordinates are outside the valid range")
             location = {
-                "latitude": float(payload["latitude"]),
-                "longitude": float(payload["longitude"]),
-                "accuracy": float(payload["accuracy"]),
-                "heading": payload.get("heading"),
+                "latitude": latitude,
+                "longitude": longitude,
+                "accuracy": _finite_number(payload.get("accuracy")),  # may be null on some phones
+                "heading": _finite_number(payload.get("heading")),
                 "heading_timestamp": heading_timestamp,
-                "speed": payload.get("speed"),
-                "timestamp": payload.get("timestamp"),
+                "speed": _finite_number(payload.get("speed")),
+                "timestamp": _finite_number(payload.get("timestamp")),
             }
-        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        except (ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError):
             self.send_error(400, "Invalid location payload")
             return
         with state_lock:
@@ -553,7 +583,6 @@ class Handler(BaseHTTPRequestHandler):
                                        location.get("heading_timestamp"))
             state["navigation"] = {
                 **navigation.snapshot(),
-                "event_id": update.event_id,
                 "message": update.message,
                 "off_route": update.off_route,
                 "arrived": update.arrived,
@@ -630,7 +659,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _stream(self):
-        cap = cv2.VideoCapture(self.source)
+        source = self.source
+        cap = cv2.VideoCapture(source)
         if not cap.isOpened():
             self.send_error(503, "Camera could not be opened")
             return
@@ -638,9 +668,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
+        # Video files are processed faster or slower than real time: speeds and
+        # time-to-collision must use the video's own clock, not the wall clock.
+        is_file = isinstance(source, str) and not source.lower().startswith(("http://", "https://", "rtsp://"))
+        video_fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        frame_number = 0
         with state_lock:
             state["connected"] = True
             state["status"] = "Starting inference"
+        with inference_lock:
+            self.engine.reset()
         try:
             while True:
                 ok, frame = cap.read()
@@ -648,7 +685,10 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 if frame.shape[1] > 1280:
                     frame = cv2.resize(frame, (1280, int(frame.shape[0] * 1280 / frame.shape[1])))
-                frame = self.engine.frame(frame)
+                timestamp = frame_number / video_fps if is_file else None
+                frame_number += 1
+                with inference_lock:
+                    frame = self.engine.frame(frame, timestamp=timestamp)
                 ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 82])
                 if not ok:
                     continue
@@ -656,7 +696,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(encoded.tobytes())
                 self.wfile.write(b"\r\n")
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
+        except ConnectionError:
             pass
         finally:
             cap.release()
@@ -691,11 +731,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(500, "Could not encode annotated frame")
             return
         if mobile_json:
-            with state_lock:
-                snapshot = dict(state)
             body = json.dumps({
                 "image": base64.b64encode(encoded.tobytes()).decode("ascii"),
-                "state": snapshot,
+                "state": self._public_state(),
             }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
