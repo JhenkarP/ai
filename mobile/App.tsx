@@ -582,7 +582,14 @@ export default function App() {
     runningRef.current = true;
     setRunning(true);
     setStatus('Connecting');
-    await startLocationUpdates();
+    try {
+      await startLocationUpdates();
+    } catch (error) {
+      stopMonitoring();
+      setStatus(error instanceof Error ? error.message : 'Location is required to start monitoring');
+      return;
+    }
+    if (!runningRef.current) return;
     timer.current = setTimeout(sendFrame, 250);
   }
 
