@@ -482,7 +482,7 @@ def build_content():
               "lighting, motion blur and reflective surfaces reduce accuracy, and a phone held at a "
               "different height changes the scale. The controlled experiments use idealised geometry. "
               "The real-video clips have no ground-truth labels, the stairs detector produced false "
-              "alarms on an indoor patterned floor, the hazard test set has few stairs examples, the bin "
+              "alarms on an indoor patterned floor and on an ordinary sidewalk, the hazard test set has few stairs examples, the bin "
               "class is not usable, and the weights in the repository's live configuration are a "
               "single-class stairs model rather than the six-class model evaluated in Table IV. No study with "
               "visually impaired users has been carried out. The prototype has not been validated for "

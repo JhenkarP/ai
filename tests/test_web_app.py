@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 import web_app
-
+from blindnav.detector import Detection
 
 class StubDetector:
     def detect(self, frame):
@@ -131,3 +131,59 @@ def test_garbage_heading_timestamp_does_not_crash_navigation(server):
         "heading": 90, "heading_timestamp": "yesterday",
     })
     assert response.status == 200
+
+
+@pytest.mark.parametrize("previous, reported, expected", [
+    (None, 5.0, 5.0), (5.0, 5.2, 5.2), (5.0, 5.0, 5.001), (5.0, 4.0, 5.001),
+])
+def test_next_capture_time_never_goes_backwards(previous, reported, expected):
+    assert web_app._next_capture_time(previous, reported) == pytest.approx(expected)
+
+
+class ApproachingDetector:
+    """One person whose box grows as if it will reach the user at t = 3 s."""
+
+    def __init__(self):
+        self.frame_number = 0
+        self.seen = []
+
+    def detect(self, frame):
+        t = 0.1 * self.frame_number
+        self.frame_number += 1
+        height = int(100 * 3 / (3 - t))
+        detection = Detection(box=(300, 50, 340, 50 + height), class_name="person",
+                              confidence=0.9, track_id=1)
+        self.seen.append(detection)
+        return [detection]
+
+    def reset_tracking(self):
+        self.frame_number = 0
+
+
+def send_frames(base, session, with_capture_time):
+    import base64
+    import cv2
+
+    ok, jpeg = cv2.imencode(".jpg", np.full((480, 640, 3), 90, dtype=np.uint8))
+    image = base64.b64encode(jpeg.tobytes()).decode()
+    for number in range(12):
+        payload = {"image": image}
+        if with_capture_time:
+            payload.update({"captured_at": 1000 + 0.1 * number, "session": session})
+        post_json(base, "/frame", payload).read()
+
+
+def test_time_to_collision_uses_the_capture_time_of_phone_frames(server, monkeypatch):
+    engine = make_engine(depth_every=1)
+    engine.detector = ApproachingDetector()
+    monkeypatch.setattr(web_app.Handler, "engine", engine)
+    monkeypatch.setattr(web_app.Handler, "capture_session", None)
+
+    # The frames arrive within milliseconds of each other, so arrival time cannot show the approach.
+    send_frames(server, "a", with_capture_time=False)
+    assert engine.detector.seen[-1].ttc is None
+
+    engine.reset()
+    send_frames(server, "b", with_capture_time=True)
+    # The estimate comes from a 1 s window, so it describes its middle (t = 0.6 s), not the last frame.
+    assert engine.detector.seen[-1].ttc == pytest.approx(3 - 0.6, abs=0.15)

@@ -692,11 +692,84 @@ export default function App() {
           <Text style={styles.liveText}>{running ? 'LIVE' : 'STANDBY'}</Text>
         </View>
       </View>
+      <View style={[styles.alertBox, styles.alertTop, safetyActive && (safetyUrgent ? styles.alertUrgent : styles.alertCaution)]}>
+        <Text style={styles.eyebrow}>{safetyActive ? (safetyUrgent ? 'STOP / URGENT' : 'SAFETY CAUTION') : 'SAFETY CLEAR'}</Text>
+        <Text style={styles.alert}>{alert}</Text>
+      </View>
       <View style={styles.preview}>
         <CameraView ref={camera} style={StyleSheet.absoluteFill} facing="back" />
         {image && <Image source={{ uri: image }} style={styles.annotated} resizeMode="cover" />}
         {!image && <Text style={styles.previewHint}>Annotated feed appears here</Text>}
       </View>
+      <View style={styles.stats}>
+        <Stat label="STATUS" value={status} />
+        <Stat label="DEPTH" value={depth ? 'ACTIVE' : 'OFF'} />
+        <Stat label="FPS" value={fps ? `${fps.toFixed(1)}` : '--'} />
+      </View>
+      <Pressable style={[styles.primaryButton, styles.primaryTop, running && styles.stopButton]} onPress={running ? stopMonitoring : startMonitoring}>
+        <Text style={styles.primaryText}>{running ? 'Stop monitoring' : 'Start monitoring'}</Text>
+      </Pressable>
+      <Text style={styles.sectionTitle}>WALKING ROUTE</Text>
+      <View style={styles.routeRow}>
+        <TextInput
+          value={destination}
+          onChangeText={(value) => {
+            setDestination(value);
+            setSelectedDestination(null);
+            setDestinationSearchProvider(null);
+          }}
+          placeholder="Search nearby places or type a destination"
+          placeholderTextColor="#71808b"
+          style={[styles.input, styles.destinationInput]}
+        />
+        <Pressable style={styles.routeButton} onPress={setRoute}>
+          <Text style={styles.routeText}>Route</Text>
+        </Pressable>
+      </View>
+      <Pressable style={styles.googleMapsButton} onPress={openInGoogleMaps}>
+        <Text style={styles.googleMapsText}>Open in Google Maps</Text>
+      </Pressable>
+      {destinationSearching && <Text style={styles.searchStatus}>Searching nearby places…</Text>}
+      {destinationSearchProvider && (
+        <Text style={styles.searchStatus}>OpenStreetMap results (Photon)</Text>
+      )}
+      {destinationSuggestions.length > 0 && (
+        <View style={styles.suggestionList}>
+          {destinationSuggestions.map((suggestion) => (
+            <Pressable
+              key={`${suggestion.latitude}:${suggestion.longitude}`}
+              style={styles.suggestionItem}
+              onPress={() => {
+                setDestination(suggestion.display_name);
+                setSelectedDestination(suggestion);
+                setDestinationSuggestions([]);
+              }}
+            >
+              <Text style={styles.suggestionName}>{suggestion.name}</Text>
+              <Text style={styles.suggestionAddress} numberOfLines={2}>{suggestion.display_name}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      <View style={styles.navigationBox}>
+        <Text style={styles.eyebrow}>NAVIGATION</Text>
+        <Text style={styles.navigationText}>{routeStatus}</Text>
+        {navigation.distance_remaining !== null && (
+          <Text style={styles.locationText}>
+            {navigation.arrived ? 'Arrived' : `${Math.round(navigation.distance_remaining)} m remaining`}
+          </Text>
+        )}
+        {navigation.off_route && <Text style={styles.routeWarning}>Off route</Text>}
+        {navigation.target_bearing !== null && navigation.target_bearing !== undefined && (
+          <Text style={styles.locationText}>
+            Road direction: {cardinalDirection(navigation.target_bearing)} ({Math.round(navigation.target_bearing)} degrees)
+          </Text>
+        )}
+        <Text style={styles.locationText}>{locationStatus}</Text>
+        <Text style={styles.locationText}>{headingStatus}</Text>
+      </View>
+      <LiveMapInset position={mapPosition} route={navigation.route_geometry ?? []} />
+      <Text style={styles.sectionTitle}>SETTINGS</Text>
       <TextInput
         value={backend}
         onChangeText={setBackend}
@@ -727,79 +800,6 @@ export default function App() {
           </View>
         )}
       </View>
-      <View style={styles.routeRow}>
-        <TextInput
-          value={destination}
-          onChangeText={(value) => {
-            setDestination(value);
-            setSelectedDestination(null);
-            setDestinationSearchProvider(null);
-          }}
-          placeholder="Search nearby places or type a destination"
-          placeholderTextColor="#71808b"
-          style={[styles.input, styles.destinationInput]}
-        />
-        <Pressable style={styles.routeButton} onPress={setRoute}>
-          <Text style={styles.routeText}>Route</Text>
-        </Pressable>
-      </View>
-      <Pressable style={styles.googleMapsButton} onPress={openInGoogleMaps}>
-        <Text style={styles.googleMapsText}>Open in Google Maps</Text>
-      </Pressable>
-      {destinationSearching && <Text style={styles.searchStatus}>Searching nearby places…</Text>}
-      {destinationSearchProvider && (
-        <Text style={styles.searchStatus}>
-          'OpenStreetMap results (Photon)'
-        </Text>
-      )}
-      {destinationSuggestions.length > 0 && (
-        <View style={styles.suggestionList}>
-          {destinationSuggestions.map((suggestion) => (
-            <Pressable
-              key={`${suggestion.latitude}:${suggestion.longitude}`}
-              style={styles.suggestionItem}
-              onPress={() => {
-                setDestination(suggestion.display_name);
-                setSelectedDestination(suggestion);
-                setDestinationSuggestions([]);
-              }}
-            >
-              <Text style={styles.suggestionName}>{suggestion.name}</Text>
-              <Text style={styles.suggestionAddress} numberOfLines={2}>{suggestion.display_name}</Text>
-            </Pressable>
-          ))}
-        </View>
-      )}
-      <LiveMapInset position={mapPosition} route={navigation.route_geometry ?? []} />
-      <View style={styles.navigationBox}>
-        <Text style={styles.eyebrow}>NAVIGATION</Text>
-        <Text style={styles.navigationText}>{routeStatus}</Text>
-        {navigation.distance_remaining !== null && (
-          <Text style={styles.locationText}>
-            {navigation.arrived ? 'Arrived' : `${Math.round(navigation.distance_remaining)} m remaining`}
-          </Text>
-        )}
-        {navigation.off_route && <Text style={styles.routeWarning}>Off route</Text>}
-        {navigation.target_bearing !== null && navigation.target_bearing !== undefined && (
-          <Text style={styles.locationText}>
-            Road direction: {cardinalDirection(navigation.target_bearing)} ({Math.round(navigation.target_bearing)} degrees)
-          </Text>
-        )}
-        <Text style={styles.locationText}>{locationStatus}</Text>
-        <Text style={styles.locationText}>{headingStatus}</Text>
-      </View>
-      <View style={styles.stats}>
-        <Stat label="STATUS" value={status} />
-        <Stat label="DEPTH" value={depth ? 'ACTIVE' : 'OFF'} />
-        <Stat label="FPS" value={fps ? `${fps.toFixed(1)}` : '--'} />
-      </View>
-      <View style={[styles.alertBox, safetyActive && (safetyUrgent ? styles.alertUrgent : styles.alertCaution)]}>
-        <Text style={styles.eyebrow}>{safetyActive ? (safetyUrgent ? 'STOP / URGENT' : 'SAFETY CAUTION') : 'SAFETY CLEAR'}</Text>
-        <Text style={styles.alert}>{alert}</Text>
-      </View>
-      <Pressable style={[styles.primaryButton, running && styles.stopButton]} onPress={running ? stopMonitoring : startMonitoring}>
-        <Text style={styles.primaryText}>{running ? 'Stop monitoring' : 'Start monitoring'}</Text>
-      </Pressable>
       <StatusBar style="auto" />
       </ScrollView>
     </SafeAreaView>
@@ -878,4 +878,7 @@ const styles = StyleSheet.create({
   primaryButton: { alignItems: 'center', backgroundColor: '#8ce3c3', borderRadius: 6, paddingVertical: 15 },
   stopButton: { backgroundColor: '#dc7668' },
   primaryText: { color: '#0b1418', fontSize: 16, fontWeight: '800' },
+  alertTop: { marginTop: 0, marginBottom: 12 },
+  primaryTop: { marginTop: 12 },
+  sectionTitle: { color: '#8a9aa1', fontSize: 11, fontWeight: '700', letterSpacing: 1.5, marginTop: 22 },
 });

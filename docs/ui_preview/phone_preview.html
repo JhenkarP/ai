@@ -1,0 +1,86 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>SafeStride mobile app preview (new layout)</title>
+<style>
+body{margin:0;background:#dfe5e8;font-family:system-ui,Segoe UI,Roboto,sans-serif;padding:24px}
+h1{font:600 18px system-ui;margin:0 0 4px;color:#24343a}
+.sub{color:#51646b;font-size:13px;margin-bottom:18px;max-width:1100px}
+.row{display:flex;gap:28px;align-items:flex-start}
+.cap{text-align:center;font-size:13px;color:#24343a;margin-top:8px;font-weight:600}
+.phone{width:360px;height:780px;border:10px solid #111;border-radius:34px;overflow:hidden;background:#0b1418;position:relative}
+.scroll{height:100%;overflow:hidden;padding:30px 18px 28px;box-sizing:border-box;color:#f1f7f4}
+.eyebrow{color:#8ce3c3;font-size:11px;font-weight:700;letter-spacing:1.5px}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.title{font-size:30px;font-weight:700;margin-top:5px}
+.pill{border:1px solid #53636b;padding:7px 12px;color:#8ce3c3;font-size:11px;font-weight:700}
+.pill.on{border-color:#8ce3c3}
+.preview{background:#162329;border:1px solid #31434a;border-radius:8px;height:250px;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#9aabb2;font-size:14px}
+.preview img{width:100%;height:100%;object-fit:cover}
+.input{background:#142127;border:1px solid #31434a;color:#71808b;margin-top:14px;padding:12px 13px;border-radius:6px;font-size:14px}
+.input.v{color:#f1f7f4}
+.share{background:#142127;border-left:3px solid #8ce3c3;padding:12px;margin-top:12px;border-radius:4px}
+.share .st{color:#bac8cc;font-size:12px;margin:5px 0 9px}
+.sbtn{background:#8ce3c3;color:#0b1418;font-weight:800;text-align:center;padding:11px;border-radius:5px;font-size:14px}
+.rr{display:flex;gap:8px;align-items:center}
+.rr .input{flex:1}
+.rb{background:#294b4b;color:#8ce3c3;font-weight:800;border-radius:6px;margin-top:14px;padding:14px 15px;font-size:14px}
+.gm{color:#8ce3c3;font-size:13px;font-weight:700;text-decoration:underline;padding:10px 2px}
+.sec{color:#8a9aa1;font-size:11px;font-weight:700;letter-spacing:1.5px;margin-top:22px}
+.map{height:150px;border:1px solid #31434a;border-radius:7px;background:#e8eadf;margin-top:12px;position:relative;overflow:hidden}
+.map svg{position:absolute;inset:0;width:100%;height:100%}
+.tag{position:absolute;background:rgba(11,20,24,.88);color:#fff;font-size:9px;font-weight:800;padding:4px 6px;border-radius:3px}
+.dot{display:inline-block;width:6px;height:6px;border-radius:3px;background:#8ce3c3;margin-right:4px}
+.attr{position:absolute;right:3px;bottom:2px;background:rgba(255,255,255,.82);color:#24343a;font-size:8px;padding:0 3px}
+.nav{background:#142127;border-left:3px solid #8ca9e3;padding:14px;margin-top:12px}
+.nav .t{font-size:16px;font-weight:600;margin-top:7px}
+.nav .l{color:#8a9aa1;font-size:12px;margin-top:7px}
+.stats{display:flex;gap:8px;margin-top:12px}
+.stat{flex:1;background:#142127;padding:11px;border-radius:6px}
+.stat .a{color:#8a9aa1;font-size:10px;font-weight:700}
+.stat .b{font-size:15px;font-weight:700;margin-top:5px}
+.alert{background:#142127;border-left:3px solid #8ce3c3;padding:14px;margin:0 0 12px}
+.alert.u{border-color:#ff625e;background:#301b1b}
+.alert.c{border-color:#f2bd57;background:#2b281d}
+.alert .m{font-size:17px;font-weight:600;margin-top:7px}
+.pb{background:#8ce3c3;color:#0b1418;text-align:center;font-size:16px;font-weight:800;padding:15px;border-radius:6px;margin-top:12px}
+.pb.stop{background:#dc7668}
+.sug{background:#142127;border:1px solid #31434a;margin-top:4px}
+.sug div{padding:10px 12px}
+.sug b{font-size:14px}.sug span{display:block;color:#9aabb2;font-size:11px;margin-top:3px}
+.fade{position:absolute;left:0;right:0;bottom:0;height:40px;background:linear-gradient(transparent,#0b1418)}
+</style></head><body>
+<h1>SafeStride mobile app – new screen order</h1>
+<div class="sub">Order is now: safety alert, video, status, Start/Stop, then route search, navigation, map, and settings last. This is a drawn mock-up of the layout in mobile/App.tsx, not a device render; the route, place and message texts are example values. The camera frame is a real annotated frame from the project.</div>
+<div class="row">
+
+<div><div class="phone"><div class="scroll">
+<div class="header"><div><div class="eyebrow">SAFESTRIDE MOBILE</div><div class="title">Path awareness</div></div><div class="pill">STANDBY</div></div>
+<div class="alert"><div class="eyebrow">SAFETY CLEAR</div><div class="m">No active safety alert</div></div>
+<div class="preview">Annotated feed appears here</div>
+<div class="stats"><div class="stat"><div class="a">STATUS</div><div class="b">Stopped</div></div><div class="stat"><div class="a">DEPTH</div><div class="b">OFF</div></div><div class="stat"><div class="a">FPS</div><div class="b">--</div></div></div>
+<div class="pb">Start monitoring</div>
+<div class="sec">WALKING ROUTE</div>
+<div class="rr"><div class="input">Search nearby places or type a destination</div><div class="rb">Route</div></div>
+<div class="gm">Open in Google Maps</div>
+<div class="fade"></div></div></div><div class="cap">1. Standby: Start button right under the video</div></div>
+
+<div><div class="phone"><div class="scroll">
+<div class="header"><div><div class="eyebrow">SAFESTRIDE MOBILE</div><div class="title">Path awareness</div></div><div class="pill on">LIVE</div></div>
+<div class="alert u"><div class="eyebrow">STOP / URGENT</div><div class="m">Stop! Path blocked, 3 meters. Keep Left.</div></div>
+<div class="preview"><img src="feed.png"></div>
+<div class="stats"><div class="stat"><div class="a">STATUS</div><div class="b">Monitoring</div></div><div class="stat"><div class="a">DEPTH</div><div class="b">ACTIVE</div></div><div class="stat"><div class="a">FPS</div><div class="b">8.4</div></div></div>
+<div class="pb stop">Stop monitoring</div>
+<div class="sec">WALKING ROUTE</div>
+<div class="rr"><div class="input v">Pharmacy</div><div class="rb">Route</div></div>
+<div class="sug"><div><b>Apollo Pharmacy</b><span>Pipeline Road, Dasarahalli, Bengaluru</span></div></div>
+<div class="fade"></div></div></div><div class="cap">2. Live: the urgent alert is the first thing on screen</div></div>
+
+<div><div class="phone"><div class="scroll">
+<div class="nav" style="margin-top:0"><div class="eyebrow">NAVIGATION</div><div class="t">Turn right in 40 meters</div><div class="l">180 m remaining</div><div class="l">Road direction: NE (48 degrees)</div><div class="l">GPS accuracy 6 m</div></div>
+<div class="map"><div class="tag" style="top:5px;left:5px"><span class="dot"></span>GPS LIVE</div><div class="tag" style="top:5px;right:5px">Expand</div>
+<svg viewBox="0 0 320 150"><path d="M0 110 L120 100 L170 50 L320 30" stroke="#c9ccb8" stroke-width="14" fill="none"/><path d="M40 108 L120 100 L170 50 L290 34" stroke="#3f7fd9" stroke-width="4" fill="none"/><circle cx="120" cy="100" r="7" fill="#8ce3c3" stroke="#0b1418" stroke-width="2"/><circle cx="290" cy="34" r="6" fill="#dc7668"/></svg><div class="attr">© OpenStreetMap contributors</div></div>
+<div class="sec">SETTINGS</div>
+<div class="input">Backend URL</div>
+<div class="share"><div class="eyebrow">LIVE SCREEN SHARE</div><div class="st">Screen share is off</div><div class="sbtn">Share app screen</div></div>
+<div class="fade"></div></div></div><div class="cap">3. Scrolled down: navigation, map, settings last</div></div>
+
+</div></body></html>

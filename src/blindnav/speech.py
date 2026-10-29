@@ -98,23 +98,40 @@ def _synth_for(alert: Alert, primary: Synthesizer, secondary: Synthesizer) -> Sy
 
 
 class LiveSpeaker:
-    """Plays alerts in a background thread, so the video loop never waits for the audio."""
+    """Plays alerts in a background thread, so the video loop never waits for the audio.
+
+    Only the worker thread touches the audio device. PortAudio's global stream state is not
+    thread-safe: stopping it from another thread while the worker starts a new clip crashed
+    the whole process. An urgent alert therefore only bumps a generation counter; the worker
+    notices it between two short audio chunks and abandons the older clip.
+    """
+
+    CHUNK = 1024  # frames written at a time: an interruption is heard within ~50 ms
 
     def __init__(self, lang: str):
         self.lang = lang
         self.queue: queue.Queue = queue.Queue()
+        self.generation = 0
+        self.lock = threading.Lock()
         threading.Thread(target=self._worker, daemon=True).start()
 
     def say(self, alert: Alert, text: str) -> None:
-        import sounddevice as sd
-        if alert.level == URGENT:
-            sd.stop()  # an urgent alert interrupts whatever is being said
-            try:
-                while True:
-                    self.queue.get_nowait()
-            except queue.Empty:
-                pass  # the worker may have emptied the queue between two checks
-        self.queue.put((alert, text))
+        with self.lock:
+            if alert.level == URGENT:
+                self.generation += 1  # interrupts the clip being played
+                try:
+                    while True:
+                        self.queue.get_nowait()
+                except queue.Empty:
+                    pass  # the worker may have emptied the queue between two checks
+            self.queue.put((self.generation, alert, text))
+
+    def _play(self, sd, clip: np.ndarray, generation: int) -> None:
+        with sd.OutputStream(samplerate=SAMPLE_RATE, channels=2, dtype="float32") as stream:
+            for start in range(0, len(clip), self.CHUNK):
+                if generation != self.generation:
+                    return
+                stream.write(np.ascontiguousarray(clip[start:start + self.CHUNK]))
 
     def _worker(self) -> None:
         import comtypes
@@ -128,10 +145,11 @@ class LiveSpeaker:
             while True:
                 self.queue.get()
         while True:
-            alert, text = self.queue.get()
+            generation, alert, text = self.queue.get()
+            if generation != self.generation:
+                continue  # an urgent alert arrived while this one was waiting
             try:
-                sd.play(render(alert, text, _synth_for(alert, primary, secondary)), SAMPLE_RATE)
-                sd.wait()
+                self._play(sd, render(alert, text, _synth_for(alert, primary, secondary)), generation)
             except Exception as exc:  # one bad clip must not stop all later alerts
                 print(f"Could not play alert: {type(exc).__name__}: {exc}")
 

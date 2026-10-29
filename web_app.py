@@ -8,6 +8,9 @@ import math
 import os
 import secrets
 import shutil
+import socket
+import ssl
+import subprocess
 import threading
 import time
 import uuid
@@ -95,6 +98,13 @@ def _finite_number(value) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value) if math.isfinite(value) else None
+
+
+def _next_capture_time(previous: float | None, reported: float) -> float:
+    """Capture times must move forward; a repeated or earlier time is nudged past the last one."""
+    if previous is None or reported > previous:
+        return reported
+    return previous + 0.001
 
 
 def _json_request(url: str) -> dict:
@@ -317,9 +327,13 @@ class InferenceEngine:
 class Handler(BaseHTTPRequestHandler):
     engine = None
     source = 0
+    last_frames: dict = {}
+    capture_session = None
+    last_capture_time = None
 
-    def log_message(self, *_args):
-        return
+    def log_message(self, fmt, *args):
+        if urlparse(self.path).path in ("/stream", "/frame", "/route", "/upload"):
+            print(f"{self.client_address[0]} {self.command} {self.path.split('?')[0]}", flush=True)
 
     def handle(self):
         try:
@@ -460,6 +474,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self._public_state())
         elif route.path == "/stream":
             self._stream()
+        elif route.path in ("/latest.jpg", "/latest-raw.jpg"):
+            # debugging view of the newest phone frame; only the laptop itself may read it
+            frame = Handler.last_frames.get("raw" if route.path.endswith("raw.jpg") else "annotated")
+            if self.client_address[0] not in ("127.0.0.1", "::1") or frame is None:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(frame)))
+            self.end_headers()
+            self.wfile.write(frame)
         elif route.path == "/places":
             query = parse_qs(route.query).get("q", [""])[0].strip()
             if len(query) < 3:
@@ -546,6 +572,8 @@ class Handler(BaseHTTPRequestHandler):
         with saved.open("wb") as destination:
             shutil.copyfileobj(uploaded.file, destination)
         Handler.source = str(saved)
+        with state_lock:
+            state["source_kind"] = "file"
         self._json({"ok": True, "name": original_name, "source": str(saved),
                     "message": f"{original_name} uploaded and ready"})
 
@@ -654,12 +682,14 @@ class Handler(BaseHTTPRequestHandler):
         body = file_path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def _stream(self):
-        source = self.source
+        requested = parse_qs(urlparse(self.path).query).get("use", [""])[0]
+        source = 0 if requested == "camera" else self.source
         cap = cv2.VideoCapture(source)
         if not cap.isOpened():
             self.send_error(503, "Camera could not be opened")
@@ -711,11 +741,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         raw = self.rfile.read(content_length)
         mobile_json = self.headers.get("Content-Type", "").startswith("application/json")
+        capture_time = None
+        session = None
         if mobile_json:
             try:
                 payload = json.loads(raw)
                 raw = base64.b64decode(payload["image"], validate=True)
-            except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+                capture_time = _finite_number(payload.get("captured_at"))
+                session = payload.get("session")
+            except (KeyError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
                 self.send_error(400, "Invalid base64 camera frame")
                 return
         image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -725,11 +759,22 @@ class Handler(BaseHTTPRequestHandler):
         if image.shape[1] > 1280:
             image = cv2.resize(image, (1280, int(image.shape[0] * 1280 / image.shape[1])))
         with inference_lock:
-            annotated = self.engine.frame(image, speak_alert=not mobile_json)
+            timestamp = None
+            if capture_time is not None and isinstance(session, str):
+                if session != Handler.capture_session:
+                    # a new Start press: the client clock restarts, so tracking must too
+                    Handler.capture_session = session
+                    Handler.last_capture_time = None
+                    self.engine.reset()
+                timestamp = _next_capture_time(Handler.last_capture_time, capture_time)
+                Handler.last_capture_time = timestamp
+            annotated = self.engine.frame(image, speak_alert=not mobile_json, timestamp=timestamp)
         ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 82])
         if not ok:
             self.send_error(500, "Could not encode annotated frame")
             return
+        Handler.last_frames["annotated"] = encoded.tobytes()
+        Handler.last_frames["raw"] = raw
         if mobile_json:
             body = json.dumps({
                 "image": base64.b64encode(encoded.tobytes()).decode("ascii"),
@@ -750,6 +795,36 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(encoded.tobytes())
 
 
+def _lan_address() -> str | None:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("10.255.255.255", 1))  # no packet is sent; this only selects the interface
+        return probe.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
+
+
+def _dev_certificate(lan_address: str | None) -> tuple[Path, Path]:
+    """Self-signed certificate so a phone browser allows camera and GPS over the LAN."""
+    folder = ROOT / "data" / "certs"
+    certificate, key = folder / "dev.crt", folder / "dev.key"
+    if certificate.exists() and key.exists():
+        return certificate, key
+    openssl = shutil.which("openssl")
+    if not openssl:
+        raise SystemExit("--https needs openssl on PATH (it ships with Git for Windows)")
+    names = ["DNS:localhost", "IP:127.0.0.1"] + ([f"IP:{lan_address}"] if lan_address else [])
+    folder.mkdir(parents=True, exist_ok=True)
+    subprocess.run([
+        openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "30",
+        "-keyout", str(key), "-out", str(certificate), "-subj", "/CN=SafeStride dev",
+        "-addext", "subjectAltName=" + ",".join(names),
+    ], check=True, capture_output=True)
+    return certificate, key
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
@@ -758,11 +833,24 @@ def main():
     parser.add_argument("--no-depth", action="store_true")
     parser.add_argument("--no-hazards", action="store_true")
     parser.add_argument("--depth-every", type=int, default=2)
+    parser.add_argument("--https", action="store_true",
+                        help="serve HTTPS with a self-signed certificate (needed for phone camera and GPS)")
     args = parser.parse_args()
     Handler.source = int(args.source) if args.source.isdigit() else args.source
+    state["source_kind"] = "camera" if isinstance(Handler.source, int) else "file"
     Handler.engine = InferenceEngine(args.no_depth, args.no_hazards, args.depth_every)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"SafeStride web console: http://{args.host}:{args.port}")
+    scheme = "http"
+    lan_address = _lan_address()
+    if args.https:
+        certificate, key = _dev_certificate(lan_address)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certificate, key)
+        server.socket = context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
+        scheme = "https"
+    print(f"SafeStride web console: {scheme}://{args.host}:{args.port}")
+    if args.host in ("0.0.0.0", "") and lan_address:
+        print(f"Open on your phone (same Wi-Fi): {scheme}://{lan_address}:{args.port}")
     server.serve_forever()
 
 
