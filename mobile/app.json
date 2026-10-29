@@ -39,7 +39,15 @@
       "@config-plugins/react-native-webrtc",
       "./plugins/withMediaProjection",
       "./plugins/withWebrtcProguardRules",
-      "./plugins/withCleartextTraffic"
+      "./plugins/withCleartextTraffic",
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "SafeStride needs camera access to detect obstacles ahead of you.",
+          "enableMicrophonePermission": false,
+          "enableCodeScanner": false
+        }
+      ]
     ],
     "extra": {
       "eas": {

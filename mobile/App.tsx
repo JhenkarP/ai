@@ -1,10 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Location from 'expo-location';
 import { Accelerometer, Magnetometer } from 'expo-sensors';
 import * as Speech from 'expo-speech';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
+import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
 import ViewShot, { captureRef, type ViewShotRef } from 'react-native-view-shot';
 import { WebView } from 'react-native-webview';
 import { cameraAxisBearing } from './cameraBearing';
@@ -171,8 +172,9 @@ function LiveMapInset({
 }
 
 export default function App() {
-  const [permission, requestPermission] = useCameraPermissions();
-  const camera = useRef<CameraView>(null);
+  const { hasPermission, requestPermission } = useCameraPermission();
+  const device = useCameraDevice('back');
+  const camera = useRef<Camera>(null);
   const screenCaptureRoot = useRef<ViewShotRef>(null);
   const [backend, setBackendState] = useState(DEFAULT_BACKEND);
 
@@ -635,15 +637,13 @@ export default function App() {
         continue;
       }
       try {
-        const photo = await camera.current.takePictureAsync({
-          base64: true,
-          quality: 0.5,
-          skipProcessing: true,
-        });
-        if (!photo?.base64) continue;
+        // takeSnapshot grabs the current preview buffer (fast) instead of running the full
+        // photo pipeline (autofocus/metering) that takePictureAsync does on every call.
+        const snapshot = await camera.current.takeSnapshot({ quality: 50 });
+        const base64 = await FileSystem.readAsStringAsync(snapshot.path, { encoding: 'base64' });
         pendingFrames.current += 1;
         socket.send(JSON.stringify({
-          image: photo.base64,
+          image: base64,
           captured_at: Date.now() / 1000,
           session: captureSessionId.current,
         }));
@@ -750,8 +750,7 @@ export default function App() {
     }
   }
 
-  if (!permission) return <View style={styles.center}><ActivityIndicator color="#8ce3c3" /></View>;
-  if (!permission.granted) {
+  if (!hasPermission) {
     return (
       <SafeAreaView style={styles.center}>
         <Text style={styles.eyebrow}>SAFESTRIDE MOBILE</Text>
@@ -762,6 +761,7 @@ export default function App() {
       </SafeAreaView>
     );
   }
+  if (!device) return <View style={styles.center}><ActivityIndicator color="#8ce3c3" /></View>;
 
   return (
     <ViewShot ref={screenCaptureRoot} style={styles.container}>
@@ -782,7 +782,7 @@ export default function App() {
         <Text style={styles.alert}>{alert}</Text>
       </View>
       <View style={styles.preview}>
-        <CameraView ref={camera} style={StyleSheet.absoluteFill} facing="back" />
+        <Camera ref={camera} style={StyleSheet.absoluteFill} device={device} isActive={running} photo={true} />
         {image && <Image source={{ uri: image }} style={styles.annotated} resizeMode="cover" />}
         {!image && <Text style={styles.previewHint}>Annotated feed appears here</Text>}
       </View>
