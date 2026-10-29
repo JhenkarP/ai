@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
 import { Accelerometer, Magnetometer } from 'expo-sensors';
@@ -8,6 +9,8 @@ import ViewShot, { captureRef, type ViewShotRef } from 'react-native-view-shot';
 import { WebView } from 'react-native-webview';
 import { cameraAxisBearing } from './cameraBearing';
 import { startScreenShare, type ScreenShareHandle } from './screenShare';
+
+const BACKEND_STORAGE_KEY = 'safestride.backendUrl';
 import {
   ActivityIndicator,
   Dimensions,
@@ -24,7 +27,7 @@ import {
   View,
 } from 'react-native';
 
-const DEFAULT_BACKEND = 'http://10.26.49.63:8765';
+const DEFAULT_BACKEND = 'http://10.166.204.63:8765';
 
 type NavigationState = {
   active: boolean;
@@ -171,9 +174,19 @@ export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const camera = useRef<CameraView>(null);
   const screenCaptureRoot = useRef<ViewShotRef>(null);
-  const [backend, setBackend] = useState(DEFAULT_BACKEND);
+  const [backend, setBackendState] = useState(DEFAULT_BACKEND);
+
+  function setBackend(value: string) {
+    setBackendState(value);
+    void AsyncStorage.setItem(BACKEND_STORAGE_KEY, value);
+  }
+
+  useEffect(() => {
+    void AsyncStorage.getItem(BACKEND_STORAGE_KEY).then((saved) => {
+      if (saved) setBackendState(saved);
+    });
+  }, []);
   const [running, setRunning] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [image, setImage] = useState<string | null>(null);
   const [status, setStatus] = useState('Ready');
   const [alert, setAlert] = useState('No active safety alert');
@@ -205,6 +218,9 @@ export default function App() {
   const speechToken = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
+  const socketRef = useRef<WebSocket | null>(null);
+  const pendingFrames = useRef(0);
+  const captureSessionId = useRef('');
   const locationWatcher = useRef<Location.LocationSubscription | null>(null);
   const screenShareRef = useRef<ScreenShareHandle | null>(null);
   const headingWatcher = useRef<Location.LocationSubscription | null>(null);
@@ -391,6 +407,8 @@ export default function App() {
 
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current);
+    runningRef.current = false;
+    socketRef.current?.close();
     locationWatcher.current?.remove();
     headingWatcher.current?.remove();
     stopCameraOrientationUpdates();
@@ -539,45 +557,100 @@ export default function App() {
     }
   }
 
-  async function sendFrame() {
-    if (!runningRef.current || busy || !camera.current) return;
-    setBusy(true);
+  const MAX_PENDING_FRAMES = 2;
+
+  function websocketUrl(httpBackend: string): string {
     try {
-      const photo = await camera.current.takePictureAsync({
-        base64: true,
-        quality: 0.65,
-        skipProcessing: true,
-      });
-      if (!photo?.base64) throw new Error('Camera returned no frame');
-      const response = await fetch(`${backend.replace(/\/$/, '')}/frame`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: photo.base64 }),
-      });
-      if (!response.ok) throw new Error(`Backend error ${response.status}`);
-      const result = await response.json();
-      setImage(`data:image/jpeg;base64,${result.image}`);
-      const state = result.state;
-      setStatus(state.status ?? 'Monitoring');
-      setDepth(Boolean(state.depth));
-      setFps(Number(state.fps) || 0);
-      updateSafetyState(state);
-      if (state.alert_id !== lastSafetyEvent.current) {
-        lastSafetyEvent.current = state.alert_id;
-        if (state.alert) {
-          speakPrompt({
-            text: state.alert,
-            key: `safety:${state.alert_id}`,
-            priority: state.alert_urgent ? 5 : 4,
-          });
-        }
+      const url = new URL(httpBackend);
+      const wsProtocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      const port = url.port ? String(Number(url.port) + 1) : '';
+      return `${wsProtocol}//${url.hostname}${port ? `:${port}` : ''}`;
+    } catch {
+      return httpBackend.replace(/^http/, 'ws');
+    }
+  }
+
+  function applyFrameResult(result: { image: string; state: any }) {
+    setImage(`data:image/jpeg;base64,${result.image}`);
+    const state = result.state;
+    setStatus(state.status ?? 'Monitoring');
+    setDepth(Boolean(state.depth));
+    setFps(Number(state.fps) || 0);
+    updateSafetyState(state);
+    if (state.alert_id !== lastSafetyEvent.current) {
+      lastSafetyEvent.current = state.alert_id;
+      if (state.alert) {
+        speakPrompt({
+          text: state.alert,
+          key: `safety:${state.alert_id}`,
+          priority: state.alert_urgent ? 5 : 4,
+        });
       }
-      applyNavigation(state);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Connection failed');
-    } finally {
-      setBusy(false);
-      if (runningRef.current) timer.current = setTimeout(sendFrame, 180);
+    }
+    applyNavigation(state);
+  }
+
+  function connectSocket(): Promise<WebSocket> {
+    return new Promise((resolve, reject) => {
+      const socket = new WebSocket(websocketUrl(backend));
+      let opened = false;
+      socket.onopen = () => {
+        opened = true;
+        resolve(socket);
+      };
+      socket.onmessage = (event) => {
+        pendingFrames.current = Math.max(0, pendingFrames.current - 1);
+        try {
+          applyFrameResult(JSON.parse(event.data as string));
+        } catch {
+          // a malformed reply just means this frame is skipped; the next one still arrives
+        }
+      };
+      socket.onclose = () => {
+        socketRef.current = null;
+        if (runningRef.current) {
+          setStatus('Reconnecting…');
+          setTimeout(() => {
+            if (runningRef.current) {
+              connectSocket().then((next) => { socketRef.current = next; }).catch(() => {});
+            }
+          }, 1000);
+        }
+      };
+      socket.onerror = () => {
+        if (!opened) reject(new Error('Could not connect to the camera stream'));
+        else setStatus('Stream connection error');
+      };
+    });
+  }
+
+  async function captureLoop() {
+    // Captures and sends continuously: the next frame does not wait for the previous
+    // frame's analysis to come back, only for the camera itself and a small send budget.
+    while (runningRef.current) {
+      const socket = socketRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN
+        || pendingFrames.current >= MAX_PENDING_FRAMES || !camera.current) {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        continue;
+      }
+      try {
+        const photo = await camera.current.takePictureAsync({
+          base64: true,
+          quality: 0.5,
+          skipProcessing: true,
+        });
+        if (!photo?.base64) continue;
+        pendingFrames.current += 1;
+        socket.send(JSON.stringify({
+          image: photo.base64,
+          captured_at: Date.now() / 1000,
+          session: captureSessionId.current,
+        }));
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : 'Capture failed');
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
     }
   }
 
@@ -593,13 +666,25 @@ export default function App() {
       return;
     }
     if (!runningRef.current) return;
-    timer.current = setTimeout(sendFrame, 250);
+    captureSessionId.current = `${Date.now()}`;
+    pendingFrames.current = 0;
+    try {
+      socketRef.current = await connectSocket();
+    } catch (error) {
+      stopMonitoring();
+      setStatus(error instanceof Error ? error.message : 'Could not connect to the camera stream');
+      return;
+    }
+    void captureLoop();
   }
 
   function stopMonitoring() {
     runningRef.current = false;
     setRunning(false);
     setStatus('Stopped');
+    socketRef.current?.close();
+    socketRef.current = null;
+    pendingFrames.current = 0;
     locationWatcher.current?.remove();
     locationWatcher.current = null;
     headingWatcher.current?.remove();

@@ -37,7 +37,9 @@
     },
     "plugins": [
       "@config-plugins/react-native-webrtc",
-      "./plugins/withMediaProjection"
+      "./plugins/withMediaProjection",
+      "./plugins/withWebrtcProguardRules",
+      "./plugins/withCleartextTraffic"
     ],
     "extra": {
       "eas": {
