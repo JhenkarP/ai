@@ -640,7 +640,8 @@ export default function App() {
         // takeSnapshot grabs the current preview buffer (fast) instead of running the full
         // photo pipeline (autofocus/metering) that takePictureAsync does on every call.
         const snapshot = await camera.current.takeSnapshot({ quality: 50 });
-        const base64 = await FileSystem.readAsStringAsync(snapshot.path, { encoding: 'base64' });
+        const path = snapshot.path.startsWith('file://') ? snapshot.path : `file://${snapshot.path}`;
+        const base64 = await FileSystem.readAsStringAsync(path, { encoding: 'base64' });
         pendingFrames.current += 1;
         socket.send(JSON.stringify({
           image: base64,
