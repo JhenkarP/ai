@@ -27,7 +27,7 @@ import websockets
 from blindnav.announcer import Alert, Announcer, URGENT, WARNING, message, rank_alerts
 from blindnav.depth import DepthEstimator, object_distance
 from blindnav.detector import HAZARD_CLASS_CONF, Detector
-from blindnav.navigation import NavigationManager
+from blindnav.navigation import NavigationManager, distance_meters
 from blindnav.risk import MotionTracker
 from blindnav.spatial import SpatialAnalyzer, keep_confirmed_stairs
 from blindnav.speech import LiveSpeaker
@@ -161,11 +161,15 @@ def _json_request(url: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _geocode(query: str) -> tuple[float, float, str]:
-    url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=" + quote(query)
+def _geocode(query: str, near: tuple[float, float] | None = None) -> tuple[float, float, str]:
+    url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&q=" + quote(query)
     results = _json_request(url)
     if not results:
         raise ValueError("Destination was not found")
+    if near is not None:
+        # Nominatim's #1 global text match can be hundreds of km away for a short/ambiguous
+        # query; prefer whichever of its top candidates is actually closest to the user.
+        results = sorted(results, key=lambda r: distance_meters(near, (float(r["lat"]), float(r["lon"]))))
     result = results[0]
     return float(result["lat"]), float(result["lon"]), result.get("display_name", query)
 
@@ -710,7 +714,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Waiting for the browser GPS position")
             selected_coordinates = payload.get("destination_coordinates")
             if selected_coordinates is None:
-                destination = _geocode(destination_query)
+                destination = _geocode(destination_query, (current["latitude"], current["longitude"]))
             else:
                 if not isinstance(selected_coordinates, list) or len(selected_coordinates) != 2:
                     raise ValueError("Destination coordinates must contain latitude and longitude")
