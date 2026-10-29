@@ -1,6 +1,7 @@
 """Serve the SafeStride live inference stream to a browser."""
 
 import argparse
+import asyncio
 import base64
 import cgi
 import json
@@ -21,6 +22,7 @@ from urllib.request import Request, urlopen
 
 import cv2
 import numpy as np
+import websockets
 
 from blindnav.announcer import Alert, Announcer, URGENT, WARNING, message, rank_alerts
 from blindnav.depth import DepthEstimator, object_distance
@@ -35,6 +37,7 @@ ROOT = Path(__file__).parent
 WEB = ROOT / "web"
 MODELS = ROOT / "models"
 UPLOADS = ROOT / "data" / "uploads"
+CLEAR_PATH_REPEAT = 8.0  # s between "path clear" reassurances when nothing is blocking
 state_lock = threading.Lock()
 inference_lock = threading.Lock()
 state = {"connected": False, "status": "Waiting for camera", "alert": None,
@@ -47,6 +50,12 @@ navigation_lock = threading.Lock()
 navigation = NavigationManager()
 screen_share_lock = threading.Lock()
 screen_share = {"token": None, "offer": None, "answer": None, "frame": None}
+
+
+def public_state() -> dict:
+    """State for clients. The user's GPS position stays on the server."""
+    with state_lock:
+        return {key: value for key, value in state.items() if key != "location"}
 
 SCREEN_VIEWER_HTML = r"""<!doctype html>
 <html lang="en">
@@ -88,6 +97,45 @@ SCREEN_VIEWER_HTML = r"""<!doctype html>
             setTimeout(pollFrame, 500);
         }
         pollFrame();
+    </script>
+</body>
+</html>"""
+
+# Loopback-only mirror of whatever the phone is currently sending (no token needed,
+# unlike /screen: only the laptop itself can reach it, same restriction as /latest.jpg).
+LIVE_VIEWER_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>SafeStride live view</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #10191d; color: #edf5f2; font: 16px system-ui, sans-serif; }
+        main { width: min(100vw, 680px); padding: 16px; }
+        img { display: block; width: 100%; max-height: 86vh; background: #050809; object-fit: contain; border-radius: 8px; }
+        #status { padding: 12px 2px; color: #9ce5c8; }
+    </style>
+</head>
+<body>
+    <main><img id="feed" alt="Latest phone frame"><div id="status">Waiting for a frame…</div></main>
+    <script>
+        const img = document.getElementById('feed');
+        const status = document.getElementById('status');
+        async function pollState() {
+            try {
+                const state = await (await fetch('/state', { cache: 'no-store' })).json();
+                status.textContent = `${state.status} · ${state.detections} objects · ${state.fps} fps` +
+                    (state.alert ? ` · ${state.alert}` : '');
+            } catch {}
+        }
+        function pollFrame() {
+            img.src = `/latest.jpg?t=${Date.now()}`;
+        }
+        img.onerror = () => { status.textContent = 'No frame yet from the phone'; };
+        setInterval(pollFrame, 400);
+        setInterval(pollState, 400);
+        pollFrame();
+        pollState();
     </script>
 </body>
 </html>"""
@@ -235,6 +283,7 @@ class InferenceEngine:
         self.started = time.perf_counter()
         self.last_guidance = None
         self.last_guidance_time = -float("inf")
+        self.last_clear_time = -float("inf")
         self.safety_clear_frames = 0
         self.safety_latched = False
         self.safety_latched_urgent = False
@@ -298,6 +347,15 @@ class InferenceEngine:
                     self.audio.say(alert, alert_text)
                 self.last_guidance = path.guidance
                 self.last_guidance_time = elapsed
+            elif (path.ground_found and not path.blocked
+                  and elapsed - self.last_clear_time > CLEAR_PATH_REPEAT):
+                # Positive guidance: say so when the corridor is actually clear, not just silence.
+                alert = Alert("clear", "clear", 0.0, 12, 0.0, WARNING)
+                alert_text = "Path clear. Continue straight."
+                if speak_alert:
+                    self.audio.say(alert, alert_text)
+                self.last_clear_time = elapsed
+                self.last_guidance = None
         else:
             detections = keep_confirmed_stairs(detections)
         self.trails.draw(image, detections)
@@ -344,8 +402,7 @@ class Handler(BaseHTTPRequestHandler):
     @staticmethod
     def _public_state() -> dict:
         """State for clients. The user's GPS position stays on the server."""
-        with state_lock:
-            return {key: value for key, value in state.items() if key != "location"}
+        return public_state()
 
     def _screen_token_is_valid(self, token: str) -> bool:
         with screen_share_lock:
@@ -474,6 +531,17 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self._public_state())
         elif route.path == "/stream":
             self._stream()
+        elif route.path == "/live":
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                self.send_error(404)
+                return
+            body = LIVE_VIEWER_HTML.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif route.path in ("/latest.jpg", "/latest-raw.jpg"):
             # debugging view of the newest phone frame; only the laptop itself may read it
             frame = Handler.last_frames.get("raw" if route.path.endswith("raw.jpg") else "annotated")
@@ -508,6 +576,14 @@ class Handler(BaseHTTPRequestHandler):
         elif route.path == "/screen":
             token = parse_qs(route.query).get("token", [""])[0]
             self._screen_page(token)
+        elif route.path == "/screen/debug-token":
+            # loopback-only, same restriction as /latest.jpg: lets the laptop itself
+            # open the live screen-share viewer without the phone having to relay the token.
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                self.send_error(404)
+                return
+            with screen_share_lock:
+                self._json({"token": screen_share["token"]})
         elif route.path == "/screen/frame":
             self._screen_read_frame()
         elif route.path == "/screen/offer":
@@ -752,33 +828,15 @@ class Handler(BaseHTTPRequestHandler):
             except (KeyError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
                 self.send_error(400, "Invalid base64 camera frame")
                 return
-        image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if image is None:
+        result = process_camera_frame(raw, capture_time, session, speak_alert=not mobile_json)
+        if result is None:
             self.send_error(400, "Invalid camera frame")
             return
-        if image.shape[1] > 1280:
-            image = cv2.resize(image, (1280, int(image.shape[0] * 1280 / image.shape[1])))
-        with inference_lock:
-            timestamp = None
-            if capture_time is not None and isinstance(session, str):
-                if session != Handler.capture_session:
-                    # a new Start press: the client clock restarts, so tracking must too
-                    Handler.capture_session = session
-                    Handler.last_capture_time = None
-                    self.engine.reset()
-                timestamp = _next_capture_time(Handler.last_capture_time, capture_time)
-                Handler.last_capture_time = timestamp
-            annotated = self.engine.frame(image, speak_alert=not mobile_json, timestamp=timestamp)
-        ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 82])
-        if not ok:
-            self.send_error(500, "Could not encode annotated frame")
-            return
-        Handler.last_frames["annotated"] = encoded.tobytes()
-        Handler.last_frames["raw"] = raw
+        encoded_bytes, state_snapshot = result
         if mobile_json:
             body = json.dumps({
-                "image": base64.b64encode(encoded.tobytes()).decode("ascii"),
-                "state": self._public_state(),
+                "image": base64.b64encode(encoded_bytes).decode("ascii"),
+                "state": state_snapshot,
             }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -790,9 +848,74 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Content-Length", str(len(encoded_bytes)))
         self.end_headers()
-        self.wfile.write(encoded.tobytes())
+        self.wfile.write(encoded_bytes)
+
+
+def process_camera_frame(raw: bytes, capture_time: float | None, session: str | None,
+                          speak_alert: bool = True) -> tuple[bytes, dict] | None:
+    """Decode, run inference, and encode one camera frame. Shared by the HTTP and WebSocket paths."""
+    image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        return None
+    if image.shape[1] > 1280:
+        image = cv2.resize(image, (1280, int(image.shape[0] * 1280 / image.shape[1])))
+    with inference_lock:
+        timestamp = None
+        if capture_time is not None and isinstance(session, str):
+            if session != Handler.capture_session:
+                # a new Start press: the client clock restarts, so tracking must too
+                Handler.capture_session = session
+                Handler.last_capture_time = None
+                Handler.engine.reset()
+            timestamp = _next_capture_time(Handler.last_capture_time, capture_time)
+            Handler.last_capture_time = timestamp
+        annotated = Handler.engine.frame(image, speak_alert=speak_alert, timestamp=timestamp)
+    ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 82])
+    if not ok:
+        return None
+    Handler.last_frames["annotated"] = encoded.tobytes()
+    Handler.last_frames["raw"] = raw
+    return encoded.tobytes(), public_state()
+
+
+async def _ws_frame_handler(websocket) -> None:
+    """Continuous phone camera stream: frames arrive and get replied to as fast as they come,
+    instead of each one waiting for a full HTTP request/response round trip."""
+    with state_lock:
+        state["connected"] = True
+        state["status"] = "Monitoring"
+    try:
+        async for message in websocket:
+            try:
+                payload = json.loads(message)
+                raw = base64.b64decode(payload["image"], validate=True)
+                capture_time = _finite_number(payload.get("captured_at"))
+                session = payload.get("session")
+            except (KeyError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
+                continue
+            result = await asyncio.to_thread(process_camera_frame, raw, capture_time, session)
+            if result is None:
+                continue
+            encoded_bytes, state_snapshot = result
+            await websocket.send(json.dumps({
+                "image": base64.b64encode(encoded_bytes).decode("ascii"),
+                "state": state_snapshot,
+            }))
+    except websockets.exceptions.ConnectionClosed:
+        pass
+    finally:
+        with state_lock:
+            state["connected"] = False
+            state["status"] = "Camera stopped"
+
+
+def run_ws_server(host: str, port: int) -> None:
+    async def main():
+        async with websockets.serve(_ws_frame_handler, host, port, max_size=8 * 1024 * 1024):
+            await asyncio.Future()  # run forever
+    asyncio.run(main())
 
 
 def _lan_address() -> str | None:
@@ -829,16 +952,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--ws-port", type=int, default=None,
+                        help="continuous camera stream port (default: --port + 1)")
     parser.add_argument("--source", default="0", help="webcam index or video path")
     parser.add_argument("--no-depth", action="store_true")
-    parser.add_argument("--no-hazards", action="store_true")
+    parser.add_argument("--hazards", action="store_true",
+                        help="load the custom stairs/obstacle hazard model (off by default: too many false positives)")
     parser.add_argument("--depth-every", type=int, default=2)
     parser.add_argument("--https", action="store_true",
                         help="serve HTTPS with a self-signed certificate (needed for phone camera and GPS)")
     args = parser.parse_args()
     Handler.source = int(args.source) if args.source.isdigit() else args.source
     state["source_kind"] = "camera" if isinstance(Handler.source, int) else "file"
-    Handler.engine = InferenceEngine(args.no_depth, args.no_hazards, args.depth_every)
+    Handler.engine = InferenceEngine(args.no_depth, not args.hazards, args.depth_every)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     scheme = "http"
     lan_address = _lan_address()
@@ -851,6 +977,9 @@ def main():
     print(f"SafeStride web console: {scheme}://{args.host}:{args.port}")
     if args.host in ("0.0.0.0", "") and lan_address:
         print(f"Open on your phone (same Wi-Fi): {scheme}://{lan_address}:{args.port}")
+    ws_port = args.ws_port or args.port + 1
+    threading.Thread(target=run_ws_server, args=(args.host, ws_port), daemon=True).start()
+    print(f"Continuous camera stream: ws://{args.host}:{ws_port}")
     server.serve_forever()
 
 

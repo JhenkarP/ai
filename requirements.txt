@@ -6,3 +6,4 @@ transformers>=4.45    # Depth Anything V2 (Phase 2)
 comtypes              # Windows text-to-speech engine (SAPI) (Phase 5)
 sounddevice           # live audio playback (Phase 5)
 imageio-ffmpeg        # bundled ffmpeg: adds the soundtrack to demo videos (Phase 5)
+websockets            # continuous phone camera stream (Phase 7), replaces per-frame HTTP POST
