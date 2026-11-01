@@ -1,23 +1,32 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Location from 'expo-location';
+import * as MediaLibrary from 'expo-media-library';
 import { Accelerometer, Magnetometer } from 'expo-sensors';
 import * as Speech from 'expo-speech';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import RecordScreen, { RecordingResult } from 'react-native-record-screen';
 import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
 import ViewShot, { captureRef, type ViewShotRef } from 'react-native-view-shot';
-import { WebView } from 'react-native-webview';
 import { cameraAxisBearing } from './cameraBearing';
+import VoiceAssistant from './VoiceAssistant';
+import type { SceneAnalysis } from './SceneScheduler';
 import { startScreenShare, type ScreenShareHandle } from './screenShare';
 
 const BACKEND_STORAGE_KEY = 'safestride.backendUrl';
 import {
   ActivityIndicator,
+  Alert as NativeAlert,
+  Animated,
+  AppState,
   Dimensions,
   Image,
   Linking,
   Modal,
+  PermissionsAndroid,
   Pressable,
   Platform,
   SafeAreaView,
@@ -27,6 +36,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import type { StyleProp, ViewStyle } from 'react-native';
 
 const DEFAULT_BACKEND = 'http://10.166.204.63:8765';
 
@@ -55,6 +65,8 @@ type SpokenPrompt = {
   text: string;
   key: string;
   priority: number;
+  onDone?: () => void;
+  expiresAt?: number;
 };
 
 function bytesToBase64(bytes: Uint8Array) {
@@ -68,64 +80,62 @@ function bytesToBase64(bytes: Uint8Array) {
 
 type MapPosition = { latitude: number; longitude: number; timestamp: number };
 
-function buildMapHtml(position: MapPosition | null, route: [number, number][]) {
-  const safeRoute = route.filter(([latitude, longitude]) => Number.isFinite(latitude) && Number.isFinite(longitude));
-  const initialPosition = position
-    ? { latitude: position.latitude, longitude: position.longitude }
-    : null;
-
-  return `<!doctype html>
-<html><head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<style>
-html,body,#map{height:100%;width:100%;margin:0;background:#e8e5dc}.leaflet-control-attribution{font-size:8px!important}
-.endpoint{width:24px;height:24px;border:2px solid white;border-radius:50%;color:white;font:700 12px/20px system-ui;text-align:center;box-shadow:0 1px 5px #333}
-.start{background:#188a61}.finish{background:#cb4747}.you{width:16px;height:16px;border:3px solid white;border-radius:50%;background:#2878f0;box-shadow:0 1px 6px #333}
-</style></head><body><div id="map"></div>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
-const route=${JSON.stringify(safeRoute)};
-const initial=${JSON.stringify(initialPosition)};
-const fallback=[13.027,77.497];
-const map=L.map('map',{zoomControl:true,attributionControl:true,dragging:true,touchZoom:true,scrollWheelZoom:true}).setView(initial?[initial.latitude,initial.longitude]:fallback,16);
-L.tileLayer('https://tile.openstreetmap.de/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map);
-const endpoint=(label,kind)=>L.divIcon({className:'',html:'<div class="endpoint '+kind+'">'+label+'</div>',iconSize:[24,24],iconAnchor:[12,12]});
-let currentMarker=null;
-if(route.length>1){const path=route.map(([lat,lon])=>[lat,lon]);L.polyline(path,{color:'#2878f0',weight:6,opacity:.95,lineCap:'round',lineJoin:'round'}).addTo(map);L.marker(path[0],{icon:endpoint('A','start')}).addTo(map).bindPopup('Start');L.marker(path[path.length-1],{icon:endpoint('B','finish')}).addTo(map).bindPopup('Destination');map.fitBounds(path,{padding:[28,28],maxZoom:17});}
-window.updateGps=(next)=>{if(!next)return;const point=[next.latitude,next.longitude];if(currentMarker)currentMarker.setLatLng(point);else currentMarker=L.marker(point,{icon:L.divIcon({className:'',html:'<div class="you"></div>',iconSize:[16,16],iconAnchor:[8,8]})}).addTo(map).bindPopup('Your location');if(route.length<2)map.panTo(point,{animate:true,duration:.4});};
-if(initial)window.updateGps(initial);setTimeout(()=>map.invalidateSize(),100);
-</script></body></html>`;
-}
-
-function OSMMapSurface({
+function GoogleMapSurface({
   position,
   route,
 }: {
   position: MapPosition | null;
   route: [number, number][];
 }) {
-  const mapRef = useRef<WebView<{}>>(null);
-  const [html] = useState(() => buildMapHtml(position, route));
-  const [loaded, setLoaded] = useState(false);
+  const mapRef = useRef<MapView>(null);
+  const coordinates = route
+    .filter(([latitude, longitude]) => Number.isFinite(latitude) && Number.isFinite(longitude))
+    .map(([latitude, longitude]) => ({ latitude, longitude }));
+  const routeKey = coordinates.length > 1
+    ? coordinates.map(({ latitude, longitude }) => `${latitude},${longitude}`).join(';')
+    : '';
 
   useEffect(() => {
-    if (!loaded || !position) return;
-    const payload = JSON.stringify({ latitude: position.latitude, longitude: position.longitude });
-    mapRef.current?.injectJavaScript(`window.updateGps(${payload}); true;`);
-  }, [loaded, position]);
+    if (coordinates.length > 1) {
+      mapRef.current?.fitToCoordinates(coordinates, {
+        edgePadding: { top: 36, right: 36, bottom: 36, left: 36 },
+        animated: true,
+      });
+    }
+  }, [routeKey]);
+
+  useEffect(() => {
+    if (!position || coordinates.length > 1) return;
+    mapRef.current?.animateToRegion({
+      latitude: position.latitude,
+      longitude: position.longitude,
+      latitudeDelta: 0.006,
+      longitudeDelta: 0.006,
+    }, 350);
+  }, [position?.latitude, position?.longitude, routeKey]);
+
+  const initial = position
+    ? { latitude: position.latitude, longitude: position.longitude, latitudeDelta: 0.006, longitudeDelta: 0.006 }
+    : { latitude: 13.027, longitude: 77.497, latitudeDelta: 0.03, longitudeDelta: 0.03 };
 
   return (
-    <WebView<{}>
+    <MapView
       ref={mapRef}
       style={StyleSheet.absoluteFill}
-      source={{ html, baseUrl: 'https://safestride.local' }}
-      originWhitelist={['*']}
-      javaScriptEnabled
-      domStorageEnabled
-      scrollEnabled={false}
-      setSupportMultipleWindows={false}
-      onLoadEnd={() => setLoaded(true)}
-    />
+      provider={PROVIDER_GOOGLE}
+      initialRegion={initial}
+      showsCompass
+      showsScale
+      toolbarEnabled={false}
+      loadingEnabled
+    >
+      {position && <Marker coordinate={position} title="Your location" pinColor="#2878f0" />}
+      {coordinates.length > 1 && <>
+        <Polyline coordinates={coordinates} strokeColor="#2878f0" strokeWidth={6} />
+        <Marker coordinate={coordinates[0]} title="Start" pinColor="#188a61" />
+        <Marker coordinate={coordinates[coordinates.length - 1]} title="Destination" pinColor="#cb4747" />
+      </>}
+    </MapView>
   );
 }
 
@@ -150,31 +160,39 @@ function LiveMapInset({
 
   return (
     <View style={styles.mapInset}>
-      <OSMMapSurface key={`${routeKey}:inset`} position={position} route={route} />
+      <GoogleMapSurface key={`${routeKey}:inset`} position={position} route={route} />
       {!position && <Text style={styles.mapWaiting}>Waiting for GPS</Text>}
       <View style={styles.mapStatus}><View style={[styles.mapStatusDot, fresh && styles.mapStatusDotLive]} /><Text style={styles.mapStatusText}>{fresh ? 'GPS LIVE' : position ? 'GPS STALE' : 'GPS WAIT'}</Text></View>
-      <Text style={styles.mapAttribution}>© OpenStreetMap contributors</Text>
+        <Text style={styles.mapAttribution}>Powered by Google, ©2026 Google</Text>
       <Pressable style={styles.mapExpandButton} accessibilityRole="button" accessibilityLabel="Expand interactive map" onPress={() => setExpanded(true)}>
         <Text style={styles.mapExpandText}>Expand</Text>
       </Pressable>
       <Modal visible={expanded} animationType="slide" onRequestClose={() => setExpanded(false)}>
         <View style={styles.expandedMap}>
-          <OSMMapSurface key={`${routeKey}:full`} position={position} route={route} />
+          <GoogleMapSurface key={`${routeKey}:full`} position={position} route={route} />
           <Pressable style={styles.mapCloseButton} accessibilityRole="button" onPress={() => setExpanded(false)}>
             <Text style={styles.mapCloseText}>Close map</Text>
           </Pressable>
           <View style={styles.expandedMapStatus}><View style={[styles.mapStatusDot, fresh && styles.mapStatusDotLive]} /><Text style={styles.mapStatusText}>{fresh ? 'GPS LIVE' : position ? 'GPS STALE' : 'GPS WAIT'}</Text></View>
-          <Text style={styles.expandedMapAttribution}>© OpenStreetMap contributors</Text>
+          <Text style={styles.expandedMapAttribution}>Powered by Google, ©2026 Google</Text>
         </View>
       </Modal>
     </View>
   );
 }
 
+const CLOUD_CONSENT_KEY = 'safestride.cloudConsent';
+
+type SetupState = 'pending' | 'ok' | 'fail';
+
 export default function App() {
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
   const camera = useRef<Camera>(null);
+  const previewReady = useRef(false);
+  const voiceListening = useRef(false);
+  const cloudSceneConsent = useRef(false);
+  const sceneRequestInFlight = useRef(false);
   const screenCaptureRoot = useRef<ViewShotRef>(null);
   const [backend, setBackendState] = useState(DEFAULT_BACKEND);
 
@@ -186,6 +204,9 @@ export default function App() {
   useEffect(() => {
     void AsyncStorage.getItem(BACKEND_STORAGE_KEY).then((saved) => {
       if (saved) setBackendState(saved);
+    });
+    void AsyncStorage.getItem(CLOUD_CONSENT_KEY).then((saved) => {
+      if (saved === 'granted') cloudSceneConsent.current = true;
     });
   }, []);
   const [running, setRunning] = useState(false);
@@ -207,8 +228,38 @@ export default function App() {
   const [screenShareActive, setScreenShareActive] = useState(false);
   const [screenShareStarting, setScreenShareStarting] = useState(false);
   const [screenShareStatus, setScreenShareStatus] = useState('Screen share is off');
+  const [screenRecordingActive, setScreenRecordingActive] = useState(false);
+  const [screenRecordingBusy, setScreenRecordingBusy] = useState(false);
+  const [screenRecordingStatus, setScreenRecordingStatus] = useState('Screen recording is off');
   const [screenViewerUrl, setScreenViewerUrl] = useState<string | null>(null);
   const [headingStatus, setHeadingStatus] = useState('Camera direction unavailable');
+  const [screen, setScreen] = useState<'loading' | 'welcome' | 'navigate'>('loading');
+  const screenFade = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    screenFade.setValue(0);
+    Animated.timing(screenFade, { toValue: 1, duration: 350, useNativeDriver: true }).start();
+  }, [screen]);
+  const [setup, setSetup] = useState<{ location: SetupState; backend: SetupState }>({ location: 'pending', backend: 'pending' });
+
+  async function runSetup() {
+    setSetup({ location: 'pending', backend: 'pending' });
+    const location = await Location.requestForegroundPermissionsAsync().then((r) => r.granted).catch(() => false);
+    setSetup((current) => ({ ...current, location: location ? 'ok' : 'fail' }));
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const reachable = await fetch(`${backend.replace(/\/$/, '')}/state`, { signal: controller.signal })
+      .then((r) => r.ok).catch(() => false).finally(() => clearTimeout(timeout));
+    setSetup((current) => ({ ...current, backend: reachable ? 'ok' : 'fail' }));
+  }
+
+  useEffect(() => {
+    if (hasPermission && device) void runSetup();
+  }, [hasPermission, device]);
+
+  useEffect(() => {
+    if (screen === 'loading' && setup.location === 'ok' && setup.backend === 'ok') setScreen('welcome');
+  }, [setup, screen]);
   const [navigation, setNavigation] = useState<NavigationState>({
     active: false, guidance: null, event_id: 0, distance_remaining: null,
   });
@@ -218,6 +269,8 @@ export default function App() {
   const currentSpeech = useRef<(SpokenPrompt & { token: number }) | null>(null);
   const pendingSpeech = useRef<SpokenPrompt | null>(null);
   const speechToken = useRef(0);
+  const autoRerouteInFlight = useRef(false);
+  const lastAutoRerouteAt = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
   const socketRef = useRef<WebSocket | null>(null);
@@ -225,6 +278,8 @@ export default function App() {
   const captureSessionId = useRef('');
   const locationWatcher = useRef<Location.LocationSubscription | null>(null);
   const screenShareRef = useRef<ScreenShareHandle | null>(null);
+  const screenRecordingActiveRef = useRef(false);
+  const routeConfirmed = useRef(false);
   const headingWatcher = useRef<Location.LocationSubscription | null>(null);
   const accelerometerWatcher = useRef<{ remove: () => void } | null>(null);
   const magnetometerWatcher = useRef<{ remove: () => void } | null>(null);
@@ -251,7 +306,7 @@ export default function App() {
       setDestinationSearching(true);
       try {
         const response = await fetch(
-          `${backend.replace(/\/$/, '')}/places?q=${encodeURIComponent(query)}`,
+          `${backend.replace(/\/$/, '')}/places?q=${encodeURIComponent(query)}&map_provider=google`,
           { signal: controller.signal },
         );
         if (!response.ok) throw new Error(`Place search failed (${response.status})`);
@@ -304,8 +359,9 @@ export default function App() {
   function publishCameraHeading() {
     const position = currentPosition.current;
     const now = Date.now();
-    if (!position || cameraBearingRef.current === null || headingPostInFlight.current
-      || now - lastHeadingPost.current < 750) return;
+    if (!position || cameraBearingRef.current === null || now - lastHeadingPost.current < 750) return;
+
+    if (headingPostInFlight.current) return;
 
     lastHeadingPost.current = now;
     headingPostInFlight.current = true;
@@ -347,29 +403,39 @@ export default function App() {
   }
 
   function startPrompt(prompt: SpokenPrompt) {
+    if (prompt.expiresAt !== undefined && Date.now() > prompt.expiresAt) return;
     const token = ++speechToken.current;
     currentSpeech.current = { ...prompt, token };
     Speech.speak(prompt.text, {
       rate: prompt.priority >= 4 ? 1 : 0.85,
       pitch: prompt.priority >= 4 ? 1 : 0.85,
-      onDone: () => finishPrompt(token),
+      onDone: () => finishPrompt(token, true),
       onStopped: () => finishPrompt(token),
       onError: () => finishPrompt(token),
     });
   }
 
-  function finishPrompt(token: number) {
+  function finishPrompt(token: number, completed = false) {
     if (currentSpeech.current?.token !== token) return;
+    const finished = currentSpeech.current;
     currentSpeech.current = null;
+    if (completed && !safetyActiveRef.current && finished.onDone) {
+      finished.onDone();
+      return;
+    }
     const next = pendingSpeech.current;
-    if (next && !safetyActiveRef.current) {
+    if (next && (!safetyActiveRef.current || next.priority >= 5)) {
       pendingSpeech.current = null;
       startPrompt(next);
     }
   }
 
   function speakPrompt(prompt: SpokenPrompt) {
-    if (safetyActiveRef.current && prompt.priority < 4) {
+    if (voiceListening.current && prompt.priority < 5) {
+      rememberPrompt(prompt);
+      return;
+    }
+    if (safetyActiveRef.current && prompt.priority < 5) {
       rememberPrompt(prompt);
       return;
     }
@@ -379,7 +445,7 @@ export default function App() {
       return;
     }
     if (prompt.priority > current.priority) {
-      if (current.priority < 4) rememberPrompt(current);
+      if (current.priority < 5) rememberPrompt(current);
       currentSpeech.current = null;
       Speech.stop();
       startPrompt(prompt);
@@ -389,16 +455,19 @@ export default function App() {
   }
 
   function updateSafetyState(state: any) {
-    const active = Boolean(state?.safety_active);
+    const active = Boolean(state?.safety_active) && runningRef.current;
     const wasActive = safetyActiveRef.current;
     safetyActiveRef.current = active;
     setSafetyActive(active);
     setSafetyUrgent(Boolean(state?.safety_urgent));
     setAlert(active ? (state.active_alert ?? 'Safety hazard detected') : 'No active safety alert');
-    if (active && !wasActive && currentSpeech.current && currentSpeech.current.priority < 4) {
+    if (active && !wasActive && currentSpeech.current && currentSpeech.current.priority < 5) {
       rememberPrompt(currentSpeech.current);
       currentSpeech.current = null;
       Speech.stop();
+    }
+    if (active && !wasActive && cloudSceneConsent.current && !sceneRequestInFlight.current) {
+      void describeBlockAhead();
     }
     if (!active && !currentSpeech.current && pendingSpeech.current) {
       const next = pendingSpeech.current;
@@ -438,6 +507,7 @@ export default function App() {
   }, []);
 
   function applyNavigation(state: any) {
+    if (!routeConfirmed.current) return;
     const position = currentPosition.current;
     if (!position || Date.now() - position.timestamp > 10_000) {
       setRouteStatus('GPS position is stale. Stop until location updates resume.');
@@ -448,11 +518,21 @@ export default function App() {
     setNavigation(next);
     const guidance = next.message ?? next.guidance;
     setRouteStatus(next.active ? (guidance ?? 'Route active') : 'No active route');
+    if (next.off_route && destination.trim() && !autoRerouteInFlight.current
+      && Date.now() - lastAutoRerouteAt.current >= 30_000) {
+      autoRerouteInFlight.current = true;
+      lastAutoRerouteAt.current = Date.now();
+      setRouteStatus('Off route. Recalculating from your current location…');
+      void setRoute().finally(() => {
+        autoRerouteInFlight.current = false;
+      });
+    }
     if (guidance && next.event_id !== lastNavigationEvent.current) {
       lastNavigationEvent.current = next.event_id;
       const lowerGuidance = guidance.toLowerCase();
-      const priority = lowerGuidance.includes('face the road') ? 3
-        : lowerGuidance.includes('arrived') || lowerGuidance.includes('route ready') ? 1 : 2;
+      const priority = lowerGuidance.includes('arrived') ? 4
+        : lowerGuidance.includes('face the road') ? 3
+          : lowerGuidance.includes('route ready') ? 1 : 2;
       speakPrompt({ text: guidance, key: `navigation:${next.event_id}`, priority });
     }
   }
@@ -492,7 +572,18 @@ export default function App() {
       throw new Error('Allow location permission before creating a route');
     }
     setLocationStatus('Finding current location');
-    await publishLocation(await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }));
+    let locationTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const position = await Promise.race([
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
+        new Promise<never>((_, reject) => {
+          locationTimeout = setTimeout(() => reject(new Error('GPS is unavailable. Move to an open area and try again.')), 15_000);
+        }),
+      ]);
+      await publishLocation(position);
+    } finally {
+      if (locationTimeout) clearTimeout(locationTimeout);
+    }
     startCameraOrientationUpdates();
     if (!headingWatcher.current) {
       headingWatcher.current = await Location.watchHeadingAsync((heading) => {
@@ -522,8 +613,8 @@ export default function App() {
     }
   }
 
-  async function setRoute() {
-    if (!destination.trim()) return;
+  async function setRoute(routeDestination = selectedDestination, routeQuery = destination) {
+    if (!routeQuery.trim()) return false;
     try {
       // Keep GPS updating after the route exists, even if monitoring was not started yet.
       await startLocationUpdates();
@@ -531,9 +622,10 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          destination: selectedDestination?.display_name ?? destination.trim(),
-          destination_coordinates: selectedDestination
-            ? [selectedDestination.latitude, selectedDestination.longitude]
+          destination: routeDestination?.display_name ?? routeQuery.trim(),
+          map_provider: 'google',
+          destination_coordinates: routeDestination
+            ? [routeDestination.latitude, routeDestination.longitude]
             : undefined,
         }),
       });
@@ -543,9 +635,101 @@ export default function App() {
         throw new Error(detail || `Route failed (${response.status})`);
       }
       const result = await response.json();
+      routeConfirmed.current = true;
       applyNavigation({ navigation: result.navigation });
+      return true;
     } catch (error) {
       setRouteStatus(error instanceof Error ? error.message : 'Route failed');
+      return false;
+    }
+  }
+
+  function cancelAssistantSpeech() {
+    if (pendingSpeech.current?.key.startsWith('assistant:')) pendingSpeech.current = null;
+    if (currentSpeech.current?.key.startsWith('assistant:')) {
+      currentSpeech.current = null;
+      speechToken.current += 1;
+      void Speech.stop();
+    }
+  }
+
+  async function authorizeCloudScene() {
+    if (cloudSceneConsent.current) return;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(`${backend.replace(/\/$/, '')}/scene/config`, { signal: controller.signal });
+      if (!response.ok || !(await response.json()).configured) {
+        throw new Error('Cloud scene analysis is not configured. Set the Gemini key on your backend first.');
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+    const accepted = await new Promise<boolean>((resolve) => NativeAlert.alert(
+      'Cloud surroundings analysis',
+      'Camera snapshots will be sent through your backend to Google Gemini. Periodic mode sends snapshots while monitoring is active. API charges and provider data policies may apply. AI can miss or misidentify hazards.',
+      [{ text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+        { text: 'Allow', onPress: () => resolve(true) }],
+      { cancelable: true, onDismiss: () => resolve(false) },
+    ));
+    if (!accepted) throw new Error('Cloud scene analysis cancelled.');
+    cloudSceneConsent.current = true;
+    void AsyncStorage.setItem(CLOUD_CONSENT_KEY, 'granted');
+  }
+
+  async function describeBlockAhead() {
+    try {
+      const result = await analyzeSurroundings(() => safetyActiveRef.current && runningRef.current);
+      speakPrompt({
+        text: `${result.description} Suggestion: slow down, check the ground with your cane, and step around it if you can.`,
+        key: `scene:block:${Date.now()}`,
+        priority: 4,
+        expiresAt: Date.now() + 8000,
+      });
+    } catch {
+      // The on-device warning has already been spoken; a failed description is silent.
+    }
+  }
+
+  async function analyzeSurroundings(isCurrent = () => true): Promise<SceneAnalysis> {
+    if (sceneRequestInFlight.current) throw new Error('Scene analysis is already running.');
+    sceneRequestInFlight.current = true;
+    let path: string | undefined;
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await authorizeCloudScene();
+      if (!isCurrent()) throw new Error('Scene analysis cancelled.');
+      if (!runningRef.current) throw new Error('Confirm a destination first. Monitoring starts after that.');
+      for (let attempt = 0; attempt < 100 && !previewReady.current && runningRef.current; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (!previewReady.current || !camera.current || !runningRef.current || AppState.currentState !== 'active') {
+        throw new Error('Camera preview is not ready. Please try Analyze again.');
+      }
+      const snapshot = await camera.current.takeSnapshot({ quality: 60 });
+      const capturedAt = Date.now();
+      path = snapshot.path.startsWith('file://') ? snapshot.path : `file://${snapshot.path}`;
+      timeout = setTimeout(() => controller.abort(), 15_000);
+      const base64 = await FileSystem.readAsStringAsync(path, { encoding: 'base64' });
+      const response = await fetch(`${backend.replace(/\/$/, '')}/scene/analyze`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+        body: JSON.stringify({ image: base64, captured_at: capturedAt / 1000 }),
+      });
+      if (!response.ok) throw new Error(response.status === 429
+        ? 'Please wait before analyzing again.' : 'Cloud scene analysis is unavailable. Please try later.');
+      const result = await response.json();
+      if (!isCurrent() || !runningRef.current || AppState.currentState !== 'active' || Date.now() - capturedAt > 15_000) {
+        throw new Error('The scene result is no longer current. Please analyze again.');
+      }
+      if (typeof result.description !== 'string' || result.description.length > 700 || typeof result.hazard !== 'boolean') {
+        throw new Error('Invalid scene description. Please try again.');
+      }
+      return result as SceneAnalysis;
+    } finally {
+      sceneRequestInFlight.current = false;
+      if (timeout) clearTimeout(timeout);
+      if (path) await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => undefined);
     }
   }
 
@@ -585,7 +769,7 @@ export default function App() {
         speakPrompt({
           text: state.alert,
           key: `safety:${state.alert_id}`,
-          priority: state.alert_urgent ? 5 : 4,
+          priority: state.safety_active ? (state.alert_urgent ? 6 : 5) : 2,
         });
       }
     }
@@ -667,6 +851,11 @@ export default function App() {
       return;
     }
     if (!runningRef.current) return;
+    speakPrompt({
+      text: cloudSceneConsent.current ? 'Cloud descriptions are on.' : 'Cloud descriptions are off.',
+      key: 'cloud:status',
+      priority: 1,
+    });
     captureSessionId.current = `${Date.now()}`;
     pendingFrames.current = 0;
     try {
@@ -677,6 +866,21 @@ export default function App() {
       return;
     }
     void captureLoop();
+  }
+
+  async function routeFromText() {
+    const ok = await setRoute();
+    if (!ok) return;
+    if (!runningRef.current) await startMonitoring();
+    setScreen('navigate');
+  }
+
+  function changeDestination() {
+    routeConfirmed.current = false;
+    stopMonitoring();
+    setSelectedDestination(null);
+    setDestination('');
+    setScreen('welcome');
   }
 
   function stopMonitoring() {
@@ -751,6 +955,82 @@ export default function App() {
     }
   }
 
+  async function startScreenRecording() {
+    if (Platform.OS !== 'android') {
+      setScreenRecordingStatus('Screen recording is available in the Android build');
+      return;
+    }
+    setScreenRecordingBusy(true);
+    setScreenRecordingStatus('Requesting screen recording permission');
+    try {
+      const microphonePermission = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        {
+          title: 'Microphone access',
+          message: 'Allow SafeStride to include microphone audio in screen recordings.',
+          buttonPositive: 'Allow',
+          buttonNegative: 'Cancel',
+        },
+      );
+      if (microphonePermission !== PermissionsAndroid.RESULTS.GRANTED) {
+        throw new Error('Microphone permission is required to record with sound');
+      }
+
+      const result = await RecordScreen.startRecording({ mic: true, fps: 30 });
+      if (result === RecordingResult.PermissionError) {
+        setScreenRecordingStatus('Screen recording permission was denied');
+        return;
+      }
+
+      screenRecordingActiveRef.current = true;
+      setScreenRecordingActive(true);
+      setScreenRecordingStatus('Recording the phone screen with microphone audio');
+    } catch (error) {
+      setScreenRecordingStatus(error instanceof Error ? error.message : 'Could not start recording');
+    } finally {
+      setScreenRecordingBusy(false);
+    }
+  }
+
+  async function stopScreenRecording() {
+    if (!screenRecordingActiveRef.current) return;
+    setScreenRecordingBusy(true);
+    setScreenRecordingStatus('Saving recording to Media');
+    try {
+      const response = await RecordScreen.stopRecording();
+      screenRecordingActiveRef.current = false;
+      setScreenRecordingActive(false);
+      if (response.status !== 'success') {
+        throw new Error('The screen recording could not be saved');
+      }
+
+      const outputUri = response.result.outputURL.startsWith('file://')
+        ? response.result.outputURL
+        : `file://${response.result.outputURL}`;
+      setScreenRecordingStatus('Uploading recording to laptop');
+      const name = `safestride-${Date.now()}.mp4`;
+      const upload = await FileSystem.uploadAsync(
+        `${backend.replace(/\/$/, '')}/recordings/upload?name=${encodeURIComponent(name)}`,
+        outputUri,
+        {
+          httpMethod: 'POST',
+          uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+          headers: { 'Content-Type': 'video/mp4' },
+        },
+      );
+      if (upload.status !== 200) {
+        throw new Error(`Upload failed (${upload.status}). The recording is kept on the phone.`);
+      }
+      await FileSystem.deleteAsync(outputUri, { idempotent: true }).catch(() => undefined);
+      await RecordScreen.clean().catch(() => undefined);
+      setScreenRecordingStatus('Saved to laptop: F:\\Mobile\\SafeStride-Recordings');
+    } catch (error) {
+      setScreenRecordingStatus(error instanceof Error ? error.message : 'Could not save recording');
+    } finally {
+      setScreenRecordingBusy(false);
+    }
+  }
+
   if (!hasPermission) {
     return (
       <SafeAreaView style={styles.center}>
@@ -764,13 +1044,39 @@ export default function App() {
   }
   if (!device) return <View style={styles.center}><ActivityIndicator color="#8ce3c3" /></View>;
 
+  if (screen === 'loading') {
+    const failed = setup.location === 'fail' || setup.backend === 'fail';
+    return (
+      <SafeAreaView style={styles.center}>
+        <Text style={styles.eyebrow}>SAFESTRIDE</Text>
+        <Text style={styles.welcomeTitle}>Getting things ready</Text>
+        <View style={styles.stats}>
+          <SetupRow label="LOCATION" state={setup.location} />
+          <SetupRow label="BACKEND" state={setup.backend} />
+        </View>
+        {!failed && <ActivityIndicator color="#8ce3c3" style={{ marginTop: 16 }} />}
+        {failed && (
+          <View style={styles.setupActions}>
+            <Pressable style={styles.primaryButton} onPress={() => { void runSetup(); }}>
+              <Text style={styles.primaryText}>Retry</Text>
+            </Pressable>
+            <Pressable style={styles.changeButton} onPress={() => setScreen('welcome')}>
+              <Text style={styles.changeText}>Continue anyway</Text>
+            </Pressable>
+          </View>
+        )}
+      </SafeAreaView>
+    );
+  }
+
   return (
     <ViewShot ref={screenCaptureRoot} style={styles.container}>
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
+      <Animated.View style={{ opacity: screenFade }}>
       <StatusBar style="light" />
       <View style={styles.header}>
-        <View>
+        <View style={styles.headerTitle}>
           <Text style={styles.eyebrow}>SAFESTRIDE MOBILE</Text>
           <Text style={styles.title}>Path awareness</Text>
         </View>
@@ -778,23 +1084,111 @@ export default function App() {
           <Text style={styles.liveText}>{running ? 'LIVE' : 'STANDBY'}</Text>
         </View>
       </View>
-      <View style={[styles.alertBox, styles.alertTop, safetyActive && (safetyUrgent ? styles.alertUrgent : styles.alertCaution)]}>
+      <FadeInView style={[styles.alertBox, styles.alertTop, safetyActive && (safetyUrgent ? styles.alertUrgent : styles.alertCaution)]}>
         <Text style={styles.eyebrow}>{safetyActive ? (safetyUrgent ? 'STOP / URGENT' : 'SAFETY CAUTION') : 'SAFETY CLEAR'}</Text>
         <Text style={styles.alert}>{alert}</Text>
-      </View>
-      <View style={styles.preview}>
-        <Camera ref={camera} style={StyleSheet.absoluteFill} device={device} isActive={running} photo={true} />
+      </FadeInView>
+      <VoiceAssistant
+        autoGreet={screen === 'welcome'}
+        compact={screen === 'navigate'}
+        describeStatus={() => `${routeStatus}${navigation.distance_remaining !== null && navigation.distance_remaining !== undefined ? `. ${Math.round(navigation.distance_remaining)} meters remaining` : ''}`}
+        changeDestination={changeDestination}
+        safetyActive={safetyActive}
+        monitoring={running}
+        authorizeCloud={authorizeCloudScene}
+        canAnalyze={() => AppState.currentState === 'active' && runningRef.current && !voiceListening.current
+          && !safetyActiveRef.current && !currentSpeech.current && !pendingSpeech.current && !sceneRequestInFlight.current}
+        microphoneBusy={screenRecordingActive || screenRecordingBusy}
+        speak={(text, onDone, scene) => speakPrompt({ text, key: `assistant:${Date.now()}`,
+          priority: scene?.hazard ? 4 : 1, onDone, expiresAt: scene ? Date.now() + 5000 : undefined })}
+        cancelSpeech={cancelAssistantSpeech}
+        onListeningChange={(value) => {
+          voiceListening.current = value;
+          if (value && currentSpeech.current && currentSpeech.current.priority < 5) {
+            rememberPrompt(currentSpeech.current);
+            currentSpeech.current = null;
+            void Speech.stop();
+          }
+          if (!value && !currentSpeech.current && !safetyActiveRef.current && pendingSpeech.current) {
+            const next = pendingSpeech.current;
+            pendingSpeech.current = null;
+            startPrompt(next);
+          }
+        }}
+        search={async (query) => {
+          await startLocationUpdates();
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 15_000);
+          try {
+            const response = await fetch(`${backend.replace(/\/$/, '')}/places?q=${encodeURIComponent(query)}&map_provider=google`, { signal: controller.signal });
+            if (!response.ok) throw new Error('Place search is unavailable. Check your backend connection.');
+            const result = await response.json();
+            return result.suggestions ?? [];
+          } finally {
+            clearTimeout(timeout);
+          }
+        }}
+        navigate={async (place, isCurrent) => {
+          if (!isCurrent()) return;
+          setDestination(place.display_name);
+          setSelectedDestination(place);
+          const ready = await setRoute(place, place.display_name);
+          if (!isCurrent()) return;
+          if (!ready) throw new Error('Could not create that route. Please try another destination.');
+          if (!runningRef.current) await startMonitoring();
+          if (!isCurrent()) { stopMonitoring(); return; }
+          if (!runningRef.current) throw new Error('Route created, but monitoring could not connect to the backend.');
+          setScreen('navigate');
+        }}
+        analyze={analyzeSurroundings}
+        stop={stopMonitoring}
+        repeat={() => speakPrompt({ text: navigation.message ?? navigation.guidance ?? routeStatus, key: `navigation:repeat:${Date.now()}`, priority: 2 })}
+      />
+      {screen === 'welcome' && (
+        <View style={styles.welcomeHero}>
+          <Text style={styles.welcomeTitle}>Where would you like to go?</Text>
+          <Text style={styles.welcomeSub}>Tap Talk and say the place, or type it below.</Text>
+        </View>
+      )}
+      <View style={screen === 'welcome' ? styles.previewHidden : styles.preview}>
+        <Camera
+          ref={camera}
+          style={StyleSheet.absoluteFill}
+          device={device}
+          isActive={running}
+          photo={true}
+          onPreviewStarted={() => { previewReady.current = true; }}
+          onPreviewStopped={() => { previewReady.current = false; }}
+        />
         {image && <Image source={{ uri: image }} style={styles.annotated} resizeMode="cover" />}
         {!image && <Text style={styles.previewHint}>Annotated feed appears here</Text>}
       </View>
-      <View style={styles.stats}>
+      {screen === 'navigate' && <LiveMapInset position={mapPosition} route={navigation.route_geometry ?? []} />}
+      {screen === 'navigate' && (<>
+      <FadeInView style={styles.stats}>
         <Stat label="STATUS" value={status} />
         <Stat label="DEPTH" value={depth ? 'ACTIVE' : 'OFF'} />
         <Stat label="FPS" value={fps ? `${fps.toFixed(1)}` : '--'} />
-      </View>
+      </FadeInView>
       <Pressable style={[styles.primaryButton, styles.primaryTop, running && styles.stopButton]} onPress={running ? stopMonitoring : startMonitoring}>
         <Text style={styles.primaryText}>{running ? 'Stop monitoring' : 'Start monitoring'}</Text>
       </Pressable>
+      <View style={styles.screenRecordingBox}>
+        <Text style={styles.screenRecordingStatus}>{screenRecordingStatus}</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={screenRecordingActive ? 'Stop screen recording and save video' : 'Start screen recording'}
+          style={[styles.screenRecordingButton, screenRecordingActive && styles.screenShareStop]}
+          onPress={screenRecordingActive ? stopScreenRecording : startScreenRecording}
+          disabled={screenRecordingBusy}
+        >
+          <Text style={styles.screenShareButtonText}>
+            {screenRecordingBusy ? 'Please wait…' : screenRecordingActive ? 'Stop & save recording' : 'Record screen'}
+          </Text>
+        </Pressable>
+      </View>
+      </>)}
+      {screen === 'welcome' && (<>
       <Text style={styles.sectionTitle}>WALKING ROUTE</Text>
       <View style={styles.routeRow}>
         <TextInput
@@ -808,7 +1202,7 @@ export default function App() {
           placeholderTextColor="#71808b"
           style={[styles.input, styles.destinationInput]}
         />
-        <Pressable style={styles.routeButton} onPress={setRoute}>
+        <Pressable style={styles.routeButton} onPress={() => { void routeFromText(); }}>
           <Text style={styles.routeText}>Route</Text>
         </Pressable>
       </View>
@@ -817,7 +1211,7 @@ export default function App() {
       </Pressable>
       {destinationSearching && <Text style={styles.searchStatus}>Searching nearby places…</Text>}
       {destinationSearchProvider && (
-        <Text style={styles.searchStatus}>OpenStreetMap results (Photon)</Text>
+        <Text style={styles.searchStatus}>{destinationSearchProvider} results</Text>
       )}
       {destinationSuggestions.length > 0 && (
         <View style={styles.suggestionList}>
@@ -837,7 +1231,14 @@ export default function App() {
           ))}
         </View>
       )}
-      <View style={styles.navigationBox}>
+      </>)}
+      {screen === 'navigate' && (
+        <Pressable style={styles.changeButton} onPress={changeDestination} accessibilityRole="button" accessibilityLabel="Change destination">
+          <Text style={styles.changeText}>Change destination</Text>
+        </Pressable>
+      )}
+      {screen === 'navigate' && (<>
+      <FadeInView style={styles.navigationBox}>
         <Text style={styles.eyebrow}>NAVIGATION</Text>
         <Text style={styles.navigationText}>{routeStatus}</Text>
         {navigation.distance_remaining !== null && (
@@ -853,8 +1254,9 @@ export default function App() {
         )}
         <Text style={styles.locationText}>{locationStatus}</Text>
         <Text style={styles.locationText}>{headingStatus}</Text>
-      </View>
-      <LiveMapInset position={mapPosition} route={navigation.route_geometry ?? []} />
+      </FadeInView>
+      </>)}
+      {screen === 'navigate' && (<>
       <Text style={styles.sectionTitle}>SETTINGS</Text>
       <TextInput
         value={backend}
@@ -886,11 +1288,33 @@ export default function App() {
           </View>
         )}
       </View>
+      </>)}
       <StatusBar style="auto" />
+      </Animated.View>
       </ScrollView>
     </SafeAreaView>
     </ViewShot>
   );
+}
+
+function FadeInView({ style, children }: { style?: StyleProp<ViewStyle>; children: ReactNode }) {
+  const progress = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(progress, { toValue: 1, duration: 450, useNativeDriver: true }).start();
+  }, [progress]);
+  return (
+    <Animated.View style={[style, {
+      opacity: progress,
+      transform: [{ translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }],
+    }]}>
+      {children}
+    </Animated.View>
+  );
+}
+
+function SetupRow({ label, state }: { label: string; state: SetupState }) {
+  const text = state === 'ok' ? 'Ready' : state === 'fail' ? 'Failed' : 'Checking…';
+  return <View style={styles.stat}><Text style={styles.statLabel}>{label}</Text><Text style={styles.statValue}>{text}</Text></View>;
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
@@ -906,9 +1330,10 @@ const styles = StyleSheet.create({
     paddingTop: 12,
   },
   content: { paddingBottom: 28 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, gap: 12 },
+  headerTitle: { flex: 1, minWidth: 0 },
   eyebrow: { color: '#8ce3c3', fontSize: 11, fontWeight: '700', letterSpacing: 1.5 },
-  title: { color: '#f1f7f4', fontSize: 30, fontWeight: '700', marginTop: 5 },
+  title: { color: '#f1f7f4', fontSize: 26, fontWeight: '700', marginTop: 5 },
   livePill: { borderColor: '#53636b', borderWidth: 1, paddingHorizontal: 12, paddingVertical: 7 },
   livePillActive: { borderColor: '#8ce3c3' },
   liveText: { color: '#8ce3c3', fontSize: 11, fontWeight: '700' },
@@ -937,6 +1362,9 @@ const styles = StyleSheet.create({
   screenShareButtonText: { color: '#0b1418', fontWeight: '800' },
   screenShareNote: { color: '#9aabb2', fontSize: 11, marginTop: 9 },
   screenViewerUrl: { color: '#8ce3c3', fontSize: 11, marginTop: 5 },
+  screenRecordingBox: { backgroundColor: '#142127', borderLeftColor: '#e5b35d', borderLeftWidth: 3, padding: 12, marginTop: 10, borderRadius: 4, gap: 9 },
+  screenRecordingStatus: { color: '#bac8cc', fontSize: 12 },
+  screenRecordingButton: { alignItems: 'center', backgroundColor: '#e5b35d', paddingVertical: 11, borderRadius: 5 },
   input: { backgroundColor: '#142127', borderColor: '#31434a', borderWidth: 1, color: '#f1f7f4', marginTop: 14, paddingHorizontal: 13, paddingVertical: 12, borderRadius: 6 },
   routeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchStatus: { color: '#9aabb2', fontSize: 12, marginTop: 8 },
@@ -967,4 +1395,11 @@ const styles = StyleSheet.create({
   alertTop: { marginTop: 0, marginBottom: 12 },
   primaryTop: { marginTop: 12 },
   sectionTitle: { color: '#8a9aa1', fontSize: 11, fontWeight: '700', letterSpacing: 1.5, marginTop: 22 },
+  welcomeHero: { paddingVertical: 8, gap: 6 },
+  welcomeTitle: { color: '#f1f7f4', fontSize: 28, fontWeight: '800' },
+  welcomeSub: { color: '#9aabb2', fontSize: 14, lineHeight: 20 },
+  previewHidden: { height: 2, opacity: 0.01, overflow: 'hidden' },
+  changeButton: { alignItems: 'center', backgroundColor: '#294b4b', borderRadius: 6, paddingVertical: 13, marginTop: 14 },
+  changeText: { color: '#8ce3c3', fontWeight: '800', fontSize: 15 },
+  setupActions: { alignSelf: 'stretch', gap: 10, marginTop: 14 },
 });

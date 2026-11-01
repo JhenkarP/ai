@@ -220,7 +220,7 @@ class SpatialAnalyzer:
         return None
 
     @staticmethod
-    def _corridor(normal, offset, scale, f, W, H) -> np.ndarray:
+    def _corridor(normal, offset, scale, f, W, H) -> np.ndarray | None:
         """Project the 4 corners of the walking corridor (on the ground) into the image."""
         corners = []
         for x_m, z_m in [(-PATH_HALF_WIDTH, 0.8), (PATH_HALF_WIDTH, 0.8),
@@ -228,4 +228,8 @@ class SpatialAnalyzer:
             X, Z = x_m / scale, z_m / scale  # back to raw model units
             Y = -(normal[0] * X + normal[2] * Z + offset) / normal[1]  # point on the ground plane
             corners.append((f * X / Z + W / 2, f * Y / Z + H / 2))
-        return np.array(corners, dtype=np.int32)
+        points = np.array(corners, dtype=np.float64)
+        # A near-degenerate ground plane projects to huge or infinite points; skip the drawing.
+        if not np.isfinite(points).all() or np.abs(points).max() > 1e6:
+            return None
+        return points.astype(np.int32)

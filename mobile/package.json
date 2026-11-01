@@ -4,30 +4,40 @@
   "main": "index.ts",
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^15.0.2",
+    "@expo/vector-icons": "^15.0.2",
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~58.0.21",
     "expo-dev-client": "~58.0.17",
     "expo-file-system": "~58.0.13",
     "expo-location": "~58.0.20",
+    "expo-media-library": "~58.0.13",
     "expo-sensors": "~58.0.4",
     "expo-speech": "~58.0.3",
+    "expo-speech-recognition": "~58.0.1",
     "expo-status-bar": "~58.0.4",
     "react": "19.3.0",
     "react-native": "0.88.1",
+    "react-native-maps": "1.29.11",
+    "react-native-record-screen": "0.6.2",
     "react-native-view-shot": "6.1.1",
     "react-native-vision-camera": "^4.7.3",
-    "react-native-webrtc": "^155.0.1",
-    "react-native-webview": "14.0.1"
+    "react-native-webrtc": "^155.0.1"
   },
   "devDependencies": {
     "@types/react": "~19.3.0",
+    "dotenv": "^18.0.9",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~58.0.4",
+    "patch-package": "^8.0.1",
     "typescript": "~6.0.3"
   },
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "postinstall": "patch-package",
+    "lint": "expo lint"
   },
   "private": true
 }

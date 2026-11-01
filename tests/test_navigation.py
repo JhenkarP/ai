@@ -35,11 +35,11 @@ def test_navigation_snapshot_includes_route_geometry_for_map():
 
 
 def test_off_route_requires_two_consecutive_gps_readings():
-    manager = NavigationManager(deviation_meters=50)
+    manager = NavigationManager()
     manager.set_route(make_route(), (0.0, 0.002))
 
-    first_reading = manager.update(0.002, 0.001, accuracy=5)
-    confirmed_reading = manager.update(0.002, 0.001, accuracy=5)
+    first_reading = manager.update(0.00035, 0.001, accuracy=5)
+    confirmed_reading = manager.update(0.00035, 0.001, accuracy=5)
 
     assert first_reading.off_route is False
     assert confirmed_reading.off_route is True

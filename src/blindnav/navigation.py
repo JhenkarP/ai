@@ -52,7 +52,7 @@ def _heading_delta(current: float, target: float) -> float:
 class NavigationManager:
     """Track a walking route and emit a new voice event only when guidance changes."""
 
-    def __init__(self, deviation_meters: float = 50.0, arrival_meters: float = 25.0,
+    def __init__(self, deviation_meters: float = 30.0, arrival_meters: float = 25.0,
                  repeat_after: float = 8.0):
         self.deviation_meters = deviation_meters
         self.arrival_meters = arrival_meters
@@ -140,7 +140,7 @@ class NavigationManager:
                                         step_index=self.step_index)
             return self._event("You have arrived at your destination.", direct_remaining, arrived=True)
 
-        accuracy_tolerance = min(100.0, max(0.0, accuracy * 1.5)) if accuracy is not None else 0.0
+        accuracy_tolerance = min(60.0, max(0.0, accuracy * 1.5)) if accuracy is not None else 0.0
         deviation_tolerance = max(self.deviation_meters, accuracy_tolerance)
         if deviation > deviation_tolerance:
             self.off_route_count += 1
@@ -205,7 +205,7 @@ class NavigationManager:
                 distance = distance_meters(position, (next_point[1], next_point[0]))
             else:
                 distance = float(step.get("distance", remaining))
-            next_instruction = self._instruction(next_maneuver).lower()
+            next_instruction = (next_maneuver.get("instruction") or self._instruction(next_maneuver)).lower()
             message = (f"{prefix}walk straight for {_format_distance(distance)}, "
                        f"then {next_instruction}.")
             phase = next_instruction

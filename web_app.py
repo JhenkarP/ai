@@ -23,28 +23,34 @@ from urllib.request import Request, urlopen
 import cv2
 import numpy as np
 import websockets
+from dotenv import load_dotenv
 
 from blindnav.announcer import Alert, Announcer, URGENT, WARNING, message, rank_alerts
 from blindnav.depth import DepthEstimator, object_distance
-from blindnav.detector import HAZARD_CLASS_CONF, Detector
-from blindnav.navigation import NavigationManager, distance_meters
+from blindnav.detector import HAZARD_CLASS_CONF, Detection, Detector
+from blindnav.navigation import NavigationManager, _bearing_degrees, distance_meters
 from blindnav.risk import MotionTracker
 from blindnav.spatial import SpatialAnalyzer, keep_confirmed_stairs
 from blindnav.speech import LiveSpeaker
+from blindnav.scene_ai import analyze_scene, vision_configured
 from blindnav.visualize import TrailDrawer, draw_detections, draw_fps, draw_path
 
 ROOT = Path(__file__).parent
+load_dotenv(ROOT / ".env")
 WEB = ROOT / "web"
 MODELS = ROOT / "models"
 UPLOADS = ROOT / "data" / "uploads"
 CLEAR_PATH_REPEAT = 8.0  # s between "path clear" reassurances when nothing is blocking
+BLUR_VARIANCE_THRESHOLD = 25.0  # Laplacian variance below this = too blurry to trust depth
 state_lock = threading.Lock()
 inference_lock = threading.Lock()
+scene_analysis_lock = threading.Lock()
+last_scene_request = -float("inf")
 state = {"connected": False, "status": "Waiting for camera", "alert": None,
          "alert_id": 0, "detections": 0, "fps": 0.0, "depth": False,
          "location": None, "alert_time": 0.0, "urgent": False,
          "active_alert": None, "safety_active": False, "safety_urgent": False,
-         "alert_urgent": False,
+         "alert_urgent": False, "scene_description": None,
          "navigation": {"active": False, "guidance": None, "event_id": 0}}
 navigation_lock = threading.Lock()
 navigation = NavigationManager()
@@ -258,6 +264,95 @@ def _walking_route(start: tuple[float, float], destination: tuple[float, float])
     return routes[0]
 
 
+def _google_walking_route(start: tuple[float, float], destination: tuple[float, float]) -> dict:
+    api_key = os.environ.get("GOOGLE_ROUTES_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("Google Routes is selected but GOOGLE_ROUTES_API_KEY is not configured")
+
+    request = Request(
+        "https://routes.googleapis.com/directions/v2:computeRoutes",
+        data=json.dumps({
+            "origin": {"location": {"latLng": {"latitude": start[0], "longitude": start[1]}}},
+            "destination": {"location": {"latLng": {"latitude": destination[0], "longitude": destination[1]}}},
+            "travelMode": "WALK",
+            "polylineEncoding": "GEO_JSON_LINESTRING",
+            "languageCode": "en",
+            "units": "METRIC",
+        }).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": api_key,
+            "X-Goog-FieldMask": (
+                "routes.distanceMeters,routes.duration,routes.polyline.geoJsonLinestring,"
+                "routes.legs.steps.distanceMeters,routes.legs.steps.startLocation,"
+                "routes.legs.steps.endLocation,routes.legs.steps.navigationInstruction"
+            ),
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=20) as response:
+        routes = json.loads(response.read().decode("utf-8")).get("routes", [])
+    if not routes:
+        raise ValueError("Google Routes found no walking route")
+
+    google_route = routes[0]
+    coordinates = google_route.get("polyline", {}).get("geoJsonLinestring", {}).get("coordinates", [])
+    if len(coordinates) < 2:
+        raise ValueError("Google Routes returned no usable route geometry")
+
+    steps = []
+    for leg in google_route.get("legs", []):
+        for step in leg.get("steps", []):
+            maneuver_data = step.get("navigationInstruction", {})
+            code = maneuver_data.get("maneuver", "")
+            start_location = step.get("startLocation", {}).get("latLng", {})
+            end_location = step.get("endLocation", {}).get("latLng", {})
+            step_start = (float(start_location["latitude"]), float(start_location["longitude"]))
+            step_end = (float(end_location["latitude"]), float(end_location["longitude"]))
+            instruction = maneuver_data.get("instructions", "").strip()
+
+            if code == "DEPART":
+                maneuver_type = "depart"
+            elif code in {"DESTINATION", "DESTINATION_LEFT", "DESTINATION_RIGHT"}:
+                maneuver_type = "arrive"
+            elif code.startswith("ROUNDABOUT"):
+                maneuver_type = "roundabout"
+            elif code in {"STRAIGHT", "NAME_CHANGE", "MERGE", "FORK_LEFT", "FORK_RIGHT"}:
+                maneuver_type = "continue"
+            else:
+                maneuver_type = "turn"
+
+            modifier = "straight"
+            for token, value in (
+                ("SLIGHT_LEFT", "slight left"), ("SHARP_LEFT", "sharp left"),
+                ("UTURN_LEFT", "left"), ("TURN_LEFT", "left"), ("FORK_LEFT", "slight left"),
+                ("SLIGHT_RIGHT", "slight right"), ("SHARP_RIGHT", "sharp right"),
+                ("UTURN_RIGHT", "right"), ("TURN_RIGHT", "right"), ("FORK_RIGHT", "slight right"),
+            ):
+                if token in code:
+                    modifier = value
+                    break
+
+            steps.append({
+                "distance": step.get("distanceMeters", 0),
+                "maneuver": {
+                    "type": maneuver_type,
+                    "modifier": modifier,
+                    "instruction": instruction,
+                    "bearing_after": _bearing_degrees(step_start, step_end),
+                    "location": [step_start[1], step_start[0]],
+                },
+            })
+
+    duration = google_route.get("duration", "0s").removesuffix("s")
+    return {
+        "distance": google_route.get("distanceMeters", 0),
+        "duration": float(duration or 0),
+        "geometry": {"coordinates": coordinates},
+        "legs": [{"steps": steps}],
+    }
+
+
 class InferenceEngine:
     def __init__(self, no_depth: bool, no_hazards: bool, depth_every: int = 2):
         self.detector = Detector(str(MODELS / "yolo11s.pt"))
@@ -313,7 +408,11 @@ class InferenceEngine:
         path = None
         alert_text = None
         active_alerts = []
-        if self.depth:
+        # Motion blur (fast walking, phone swinging) makes depth and distance unreliable;
+        # a blurry frame must stay silent rather than confidently report a wrong "Stop!".
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blurry = cv2.Laplacian(gray, cv2.CV_64F).var() < BLUR_VARIANCE_THRESHOLD
+        if self.depth and not blurry:
             stale = self.depth_frame is None or self.depth_frame.shape != image.shape[:2]
             if stale or (self.frame_index - 1) % self.depth_every == 0:
                 self.depth_frame = self.depth.estimate(image)
@@ -360,8 +459,14 @@ class InferenceEngine:
                     self.audio.say(alert, alert_text)
                 self.last_clear_time = elapsed
                 self.last_guidance = None
+        elif blurry:
+            detections = keep_confirmed_stairs(detections)
         else:
             detections = keep_confirmed_stairs(detections)
+        description = describe_scene(
+            detections, image.shape[1], blurry=blurry, dark=float(gray.mean()) < 15,
+            blocked=bool(path is not None and path.blocked),
+        )
         self.trails.draw(image, detections)
         if path is not None:
             draw_path(image, path)
@@ -372,8 +477,11 @@ class InferenceEngine:
                 state["alert_id"] += 1
                 state["alert_time"] = time.time()
                 state["alert_urgent"] = alert.level == URGENT
-            state.update({"connected": True, "status": "Monitoring",
+            state.update({"connected": True,
+                          "status": "Image too blurry, hold the phone steadier" if blurry and not active_alerts
+                                    else "Monitoring",
                           "detections": len(detections),
+                          "scene_description": description,
                           "fps": round(1 / max(time.perf_counter() - started, 0.001), 1),
                           "depth": self.depth is not None,
                           "active_alert": (message(active_alerts[0]) if active_alerts else
@@ -384,6 +492,34 @@ class InferenceEngine:
             if alert_text:
                 state["alert"] = alert_text
         return image
+
+
+def describe_scene(detections: list[Detection], width: int, *, blurry: bool,
+                   dark: bool, blocked: bool) -> str:
+    if dark:
+        return "The camera view is too dark to describe reliably. Do not rely on this image for guidance."
+    if blurry:
+        return "The camera image is blurry. Hold the phone steadier and analyze again."
+    observations = []
+    seen = set()
+    for detection in sorted(detections, key=lambda item: item.confidence, reverse=True):
+        if detection.confidence < 0.5:
+            continue
+        center = (detection.box[0] + detection.box[2]) / 2 / max(width, 1)
+        side = "on the left" if center < 0.35 else "on the right" if center > 0.65 else "ahead"
+        name = detection.class_name.replace("_", " ")
+        observation = f"{name} {side}"
+        if observation in seen:
+            continue
+        seen.add(observation)
+        observations.append(observation)
+        if len(observations) == 4:
+            break
+    description = ("In the camera view: " + "; ".join(observations) + "."
+                   if observations else "I cannot confidently identify objects in this camera view.")
+    if blocked:
+        description += " A possible obstruction is in the walking corridor."
+    return description + " This does not confirm the way is safe."
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -533,6 +669,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, **self._public_state()})
         elif route.path == "/state":
             self._json(self._public_state())
+        elif route.path == "/scene/config":
+            self._json({"configured": vision_configured(), "provider": "Gemini", "minimum_interval_seconds": 15})
         elif route.path == "/stream":
             self._stream()
         elif route.path == "/live":
@@ -560,6 +698,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(frame)
         elif route.path == "/places":
             query = parse_qs(route.query).get("q", [""])[0].strip()
+            map_provider = parse_qs(route.query).get("map_provider", ["osm"])[0].lower()
             if len(query) < 3:
                 self._json({"suggestions": []})
                 return
@@ -568,12 +707,14 @@ class Handler(BaseHTTPRequestHandler):
             near = (current["latitude"], current["longitude"]) if current else None
             try:
                 google_api_key = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
-                suggestions = (
-                    _google_place_suggestions(query, near, google_api_key)
-                    if google_api_key
-                    else _place_suggestions(query, near)
-                )
-                provider = "Google Places" if google_api_key else "Photon"
+                if map_provider == "google":
+                    if not google_api_key:
+                        raise ValueError("Google Places is selected but GOOGLE_MAPS_API_KEY is not configured")
+                    suggestions = _google_place_suggestions(query, near, google_api_key)
+                    provider = "Google Places"
+                else:
+                    suggestions = _place_suggestions(query, near)
+                    provider = "Photon"
                 self._json({"suggestions": suggestions, "provider": provider})
             except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
                 self.send_error(502 if isinstance(exc, OSError) else 400, str(exc))
@@ -597,8 +738,49 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._static(route.path)
 
+    def _recording_upload(self):
+        name = Path(parse_qs(urlparse(self.path).query).get("name", ["recording.mp4"])[0]).name
+        safe = "".join(c for c in name if c.isalnum() or c in "-_.") or "recording.mp4"
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length <= 0 or length > RECORDING_MAX_BYTES:
+            self.send_error(413 if length > 0 else 400, "Invalid recording size")
+            return
+        RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+        target = RECORDINGS_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}-{safe}"
+        remaining = length
+        with target.open("wb") as handle:
+            while remaining > 0:
+                chunk = self.rfile.read(min(1 << 20, remaining))
+                if not chunk:
+                    break
+                handle.write(chunk)
+                remaining -= len(chunk)
+        if remaining:
+            target.unlink(missing_ok=True)
+            self.send_error(400, "Upload was incomplete")
+            return
+        self._json({"ok": True, "path": str(target), "bytes": length})
+
+    def _recording_analyze(self):
+        session = Path(parse_qs(urlparse(self.path).query).get("session", [""])[0]).name
+        session_dir = CAMERA_DIR / session
+        if not session or not (session_dir / "camera.mp4").exists():
+            self.send_error(404, "Camera session not found")
+            return
+        threading.Thread(target=analyze_camera_session, args=(session_dir,), daemon=True).start()
+        self._json({"ok": True, "started": session})
+
     def do_POST(self):
         route_path = urlparse(self.path).path
+        if route_path == "/recordings/upload":
+            self._recording_upload()
+            return
+        if route_path == "/recordings/analyze":
+            self._recording_analyze()
+            return
+        if route_path == "/scene/analyze":
+            self._scene_analyze()
+            return
         if route_path == "/screen/session":
             self._screen_start()
             return
@@ -713,8 +895,21 @@ class Handler(BaseHTTPRequestHandler):
             if not current:
                 raise ValueError("Waiting for the browser GPS position")
             selected_coordinates = payload.get("destination_coordinates")
+            map_provider = str(payload.get("map_provider", "osm")).lower()
             if selected_coordinates is None:
-                destination = _geocode(destination_query, (current["latitude"], current["longitude"]))
+                near = (current["latitude"], current["longitude"])
+                if map_provider == "google":
+                    google_api_key = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
+                    if not google_api_key:
+                        raise ValueError("Google Places is selected but GOOGLE_MAPS_API_KEY is not configured")
+                    candidates = _google_place_suggestions(destination_query, near, google_api_key)
+                    if not candidates:
+                        raise ValueError("Google Places found no destination for that search")
+                    closest = min(candidates, key=lambda item: distance_meters(
+                        near, (item["latitude"], item["longitude"])))
+                    destination = (closest["latitude"], closest["longitude"], closest["display_name"])
+                else:
+                    destination = _geocode(destination_query, near)
             else:
                 if not isinstance(selected_coordinates, list) or len(selected_coordinates) != 2:
                     raise ValueError("Destination coordinates must contain latitude and longitude")
@@ -722,10 +917,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
                     raise ValueError("Destination coordinates are outside the valid range")
                 destination = (latitude, longitude, destination_query)
-            route = _walking_route(
-                (current["latitude"], current["longitude"]),
-                (destination[0], destination[1]),
-            )
+            start = (current["latitude"], current["longitude"])
+            end = (destination[0], destination[1])
+            if map_provider == "google":
+                route = _google_walking_route(start, end)
+            else:
+                route = _walking_route(start, end)
             with navigation_lock:
                 update = navigation.set_route(route, (destination[0], destination[1]))
                 nav_state = {
@@ -814,6 +1011,58 @@ class Handler(BaseHTTPRequestHandler):
                 state["connected"] = False
                 state["status"] = "Camera stopped"
 
+    def _scene_analyze(self):
+        global last_scene_request
+        if not vision_configured():
+            self.send_error(503, "Cloud vision is not configured. Set GEMINI_API_KEY on the backend.")
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_error(400, "Invalid content length")
+            return
+        if not 0 < content_length <= 2 * 1024 * 1024:
+            self.send_error(413, "Scene image is missing or too large")
+            return
+        try:
+            payload = json.loads(self.rfile.read(content_length))
+            captured_at = _finite_number(payload.get("captured_at"))
+            if captured_at is None or not -5 <= time.time() - captured_at <= 15:
+                raise ValueError("Stale scene image")
+            raw = base64.b64decode(payload["image"], validate=True)
+            image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if image is None or max(image.shape[:2]) > 4096:
+                raise ValueError("Invalid image dimensions")
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            if gray.mean() < 15 or cv2.Laplacian(gray, cv2.CV_64F).var() < BLUR_VARIANCE_THRESHOLD:
+                self._json({"description": "The scene is too dark or blurry. Hold the phone steady and try again.",
+                            "hazard": False, "provider": "image-quality", "analyzed_at": time.time()})
+                return
+            scale = min(1.0, 960 / max(image.shape[:2]))
+            if scale < 1:
+                image = cv2.resize(image, (round(image.shape[1] * scale), round(image.shape[0] * scale)))
+            ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            if not ok:
+                raise ValueError("Image encoding failed")
+        except (ValueError, KeyError, TypeError, AttributeError, cv2.error):
+            self.send_error(400, "Invalid or stale scene image")
+            return
+        if not scene_analysis_lock.acquire(blocking=False):
+            self.send_error(429, "Scene analysis is already running")
+            return
+        try:
+            if time.monotonic() - last_scene_request < 10:
+                self.send_error(429, "Please wait before analyzing again")
+                return
+            last_scene_request = time.monotonic()
+            result = analyze_scene(encoded.tobytes())
+        except (OSError, ValueError, KeyError, TypeError):
+            self.send_error(502, "Cloud scene analysis is unavailable. Use your usual mobility aid and try later.")
+            return
+        finally:
+            scene_analysis_lock.release()
+        self._json(result)
+
     def _frame(self):
         content_length = int(self.headers.get("Content-Length", "0"))
         if content_length <= 0 or content_length > 8 * 1024 * 1024:
@@ -884,12 +1133,68 @@ def process_camera_frame(raw: bytes, capture_time: float | None, session: str | 
     return encoded.tobytes(), public_state()
 
 
+RECORDINGS_DIR = Path(os.environ.get("SAFESTRIDE_RECORDINGS_DIR", r"F:\Mobile\SafeStride-Recordings"))
+CAMERA_DIR = RECORDINGS_DIR.parent / "SafeStride-Camera"
+RECORDING_MAX_BYTES = 6 * 1024 ** 3
+CAMERA_FPS = 15
+
+
+class CameraSessionWriter:
+    """Writes every camera frame received during one monitoring session to a video file."""
+
+    def __init__(self) -> None:
+        self.dir = CAMERA_DIR / time.strftime("%Y%m%d-%H%M%S")
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.writer = None
+        self.count = 0
+        self.log = (self.dir / "frames.jsonl").open("w", encoding="utf-8")
+
+    def write(self, raw: bytes, captured_at: float | None) -> None:
+        image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            return
+        if self.writer is None:
+            height, width = image.shape[:2]
+            self.writer = cv2.VideoWriter(str(self.dir / "camera.mp4"),
+                                          cv2.VideoWriter_fourcc(*"mp4v"), CAMERA_FPS, (width, height))
+        self.writer.write(image)
+        self.log.write(json.dumps({"frame": self.count, "captured_at": captured_at}) + "\n")
+        self.count += 1
+
+    def close(self) -> None:
+        if self.writer is not None:
+            self.writer.release()
+        self.log.close()
+
+
+def analyze_camera_session(session_dir: Path) -> None:
+    """Runs the same detector and alert logic over a recorded camera session, frame by frame."""
+    capture = cv2.VideoCapture(str(session_dir / "camera.mp4"))
+    fps = capture.get(cv2.CAP_PROP_FPS) or CAMERA_FPS
+    events = []
+    index = 0
+    while True:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        with inference_lock:
+            Handler.engine.frame(frame, speak_alert=False, timestamp=index / fps)
+            snapshot = public_state()
+        events.append({"frame": index, "t": round(index / fps, 2), "alert": snapshot.get("active_alert"),
+                       "safety_active": snapshot.get("safety_active"), "status": snapshot.get("status")})
+        index += 1
+    capture.release()
+    (session_dir / "analysis.json").write_text(
+        json.dumps({"frames": index, "fps": fps, "events": events}, indent=1), encoding="utf-8")
+
+
 async def _ws_frame_handler(websocket) -> None:
     """Continuous phone camera stream: frames arrive and get replied to as fast as they come,
     instead of each one waiting for a full HTTP request/response round trip."""
     with state_lock:
         state["connected"] = True
         state["status"] = "Monitoring"
+    camera = CameraSessionWriter()
     try:
         async for message in websocket:
             try:
@@ -899,6 +1204,7 @@ async def _ws_frame_handler(websocket) -> None:
                 session = payload.get("session")
             except (KeyError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
                 continue
+            await asyncio.to_thread(camera.write, raw, capture_time)
             result = await asyncio.to_thread(process_camera_frame, raw, capture_time, session)
             if result is None:
                 continue
@@ -910,6 +1216,11 @@ async def _ws_frame_handler(websocket) -> None:
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:
+        camera.close()
+        if camera.count:
+            threading.Thread(target=analyze_camera_session, args=(camera.dir,), daemon=True).start()
+        else:
+            shutil.rmtree(camera.dir, ignore_errors=True)
         with state_lock:
             state["connected"] = False
             state["status"] = "Camera stopped"

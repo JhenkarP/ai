@@ -1,0 +1,10 @@
+diff --git a/node_modules/react-native-record-screen/android/src/main/java/com/recordscreen/RecordScreenModule.kt b/node_modules/react-native-record-screen/android/src/main/java/com/recordscreen/RecordScreenModule.kt
+--- a/node_modules/react-native-record-screen/android/src/main/java/com/recordscreen/RecordScreenModule.kt
++++ b/node_modules/react-native-record-screen/android/src/main/java/com/recordscreen/RecordScreenModule.kt
+@@ -101,5 +101,5 @@ class RecordScreenModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext), HBRecorderListener {
+   private fun startRecordingScreen() {
+     val mediaProjectionManager = reactApplicationContext.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager;
+     val permissionIntent = mediaProjectionManager.createScreenCaptureIntent();
+-    currentActivity!!.startActivityForResult(permissionIntent, SCREEN_RECORD_REQUEST_CODE);
++    check(reactApplicationContext.startActivityForResult(permissionIntent, SCREEN_RECORD_REQUEST_CODE, null));
+   }

@@ -7,3 +7,4 @@ comtypes              # Windows text-to-speech engine (SAPI) (Phase 5)
 sounddevice           # live audio playback (Phase 5)
 imageio-ffmpeg        # bundled ffmpeg: adds the soundtrack to demo videos (Phase 5)
 websockets            # continuous phone camera stream (Phase 7), replaces per-frame HTTP POST
+python-dotenv>=1.0    # load local API keys and settings from .env

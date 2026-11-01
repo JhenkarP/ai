@@ -31,4 +31,5 @@ Thumbs.db
 *.mov
 *.avi
 *.wav
-data/certs/
+data/
+docs/

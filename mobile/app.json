@@ -41,6 +41,13 @@
       "./plugins/withWebrtcProguardRules",
       "./plugins/withCleartextTraffic",
       [
+        "expo-media-library",
+        {
+          "granularPermissions": ["video"],
+          "savePhotosPermission": "Allow SafeStride to save screen recordings to your media library."
+        }
+      ],
+      [
         "react-native-vision-camera",
         {
           "cameraPermissionText": "SafeStride needs camera access to detect obstacles ahead of you.",

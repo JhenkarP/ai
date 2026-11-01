@@ -25,7 +25,7 @@ export function cameraAxisBearing(
   });
   if (!north) return null;
 
-  const camera = { x: 0, y: 0, z: 1 };
+  const camera = { x: 0, y: 0, z: -1 };
   const horizontalCamera = normalize({
     x: camera.x - dot(camera, up) * up.x,
     y: camera.y - dot(camera, up) * up.y,
